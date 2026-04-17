@@ -307,7 +307,7 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
             window.StartTime,
             window.EndTime,
             ordered.Count);
-        var transcriptList = new List<AlbTranscriptLine>();
+        var transcriptList = new List<Dictionary<string, string>>();
         foreach (var fragment in ordered)
         {
             if (string.IsNullOrWhiteSpace(fragment.Text))
@@ -315,11 +315,10 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
                 continue;
             }
 
-            transcriptList.Add(new AlbTranscriptLine
+            var speaker = string.IsNullOrWhiteSpace(fragment.ParticipantName) ? "Unknown" : fragment.ParticipantName.Trim();
+            transcriptList.Add(new Dictionary<string, string>(StringComparer.Ordinal)
             {
-                Speaker = fragment.ParticipantName.Trim(),
-                Text = fragment.Text.Trim(),
-                Timestamp = fragment.Timestamp
+                [speaker] = fragment.Text.Trim()
             });
         }
 
@@ -386,21 +385,9 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
         public string MeetingId { get; set; } = string.Empty;
 
         [JsonPropertyName("transcript")]
-        public List<AlbTranscriptLine> Transcript { get; set; } = new();
+        public List<Dictionary<string, string>> Transcript { get; set; } = new();
 
         [JsonPropertyName("flag")]
         public string Flag { get; set; } = string.Empty;
-    }
-
-    private sealed class AlbTranscriptLine
-    {
-        [JsonPropertyName("speaker")]
-        public string Speaker { get; set; } = string.Empty;
-
-        [JsonPropertyName("text")]
-        public string Text { get; set; } = string.Empty;
-
-        [JsonPropertyName("timestamp")]
-        public DateTime Timestamp { get; set; }
     }
 }
