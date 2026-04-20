@@ -221,6 +221,8 @@ public sealed class CallHandler
             }
         };
 
+        RegisterCallEvents(call);
+
         _transcriptionChunkManager.ResetForNewJoin();
         _participantManager.BeginNewMeeting(call.Id);
         _meetingParticipants.AttachToCall(call, _settings.ClientId);
@@ -234,6 +236,59 @@ public sealed class CallHandler
         _logger.LogDebug("FLOW[JOIN] Pipeline attached: participants, router, chunk manager, meeting context.");
         _logger.LogInformation("Join request submitted. Call ID: {CallId}, ScenarioId={ScenarioId}", call.Id, scenarioId);
         return call;
+    }
+
+    private void RegisterCallEvents(ICall call)
+    {
+        var botClientId = _settings.ClientId.Trim();
+        var leaveTriggered = 0;
+        call.Participants.OnUpdated += (_, _) =>
+        {
+            try
+            {
+                var humanParticipants = call.Participants
+                    .Where(p =>
+                    {
+                        var resource = p.Resource;
+                        if (resource is null)
+                        {
+                            return false;
+                        }
+
+                        var appId = resource.Info?.Identity?.Application?.Id;
+                        if (!string.IsNullOrWhiteSpace(appId) &&
+                            string.Equals(appId.Trim(), botClientId, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return false;
+                        }
+
+                        return !string.IsNullOrWhiteSpace(resource.Info?.Identity?.User?.Id);
+                    })
+                    .ToList();
+
+                if (humanParticipants.Count > 0 || Interlocked.Exchange(ref leaveTriggered, 1) != 0)
+                {
+                    return;
+                }
+
+                _logger.LogInformation("No human participants left. Bot is leaving the call.");
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await call.DeleteAsync().ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error hanging up empty call.");
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error while checking participant count for auto-leave.");
+            }
+        };
     }
 
     private void OnIncomingCall(ICallCollection _, CollectionEventArgs<ICall> args)
