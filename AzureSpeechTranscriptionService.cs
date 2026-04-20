@@ -152,7 +152,8 @@ public sealed class AzureSpeechTranscriptionService : IAsyncDisposable
         {
             var speechConfig = SpeechConfig.FromSubscription(_settings.AzureSpeechKey!, _settings.AzureSpeechRegion!);
             speechConfig.SpeechRecognitionLanguage = "en-US";
-            speechConfig.SetProperty(PropertyId.Speech_SegmentationSilenceTimeoutMs, "800");
+            speechConfig.SetProperty(PropertyId.Speech_SegmentationSilenceTimeoutMs, "500");
+            speechConfig.SetProperty(PropertyId.Speech_InitialSilenceTimeoutMs, "500");
 
             var push = AudioInputStream.CreatePushStream(Pcm16kMono);
             var audioConfig = AudioConfig.FromStreamInput(push);
