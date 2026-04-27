@@ -1,9 +1,12 @@
 using System.Collections.Concurrent;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using Amazon;
 using Amazon.DynamoDBv2;
 using Amazon.DynamoDBv2.Model;
+using Azure.Core;
 using Azure.Identity;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -22,7 +25,10 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
     private readonly ILogger<BridgeLeadDynamoDmService> _logger;
     private readonly IAmazonDynamoDB? _dynamo;
     private readonly GraphServiceClient _graph;
+    private readonly ClientSecretCredential _credential;
+    private readonly HttpClient _http = new();
     private readonly ConcurrentDictionary<string, byte> _sentKeys = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly string[] GraphScopes = { "https://graph.microsoft.com/.default" };
 
     public BridgeLeadDynamoDmService(BotSettings settings, ILogger<BridgeLeadDynamoDmService> logger)
     {
@@ -35,8 +41,8 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
             _dynamo = new AmazonDynamoDBClient(region);
         }
 
-        var credential = new ClientSecretCredential(_settings.TenantId, _settings.ClientId, _settings.ClientSecret);
-        _graph = new GraphServiceClient(credential, new[] { "https://graph.microsoft.com/.default" });
+        _credential = new ClientSecretCredential(_settings.TenantId, _settings.ClientId, _settings.ClientSecret);
+        _graph = new GraphServiceClient(_credential, GraphScopes);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -101,10 +107,22 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
             {
                 if (IsNonRetryableAppOnlyChatPostError(ex))
                 {
+                    var fallbackSent = await TrySendActivityNotificationAsync(bridgeLeadId.Trim(), generatedResponse.Trim(), cancellationToken)
+                        .ConfigureAwait(false);
+                    if (fallbackSent)
+                    {
+                        _logger.LogInformation(
+                            "Bridge-lead fallback activity notification sent for meetingId={MeetingId}, bridgeLeadId={BridgeLeadId}.",
+                            meetingId,
+                            bridgeLeadId);
+                        continue;
+                    }
+
                     _logger.LogError(
                         ex,
                         "Bridge-lead DM cannot be sent via Graph app-only chat message POST for meetingId={MeetingId}, bridgeLeadId={BridgeLeadId}. " +
-                        "This is non-retryable with current permissions/model. Use delegated auth/proactive bot message or migration scope flow.",
+                        "Fallback activity notification also failed. This is non-retryable with current permissions/model. " +
+                        "Use delegated auth/proactive bot message or grant Teams activity notification permissions.",
                         meetingId,
                         bridgeLeadId);
                     continue;
@@ -231,5 +249,57 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
         return text.Contains("application-only context only for import purposes", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("requires one of 'Teamwork.Migrate.All'", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("Missing role permissions on the request", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<bool> TrySendActivityNotificationAsync(string bridgeLeadEntraId, string message, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var token = await _credential.GetTokenAsync(new TokenRequestContext(GraphScopes), cancellationToken).ConfigureAwait(false);
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"https://graph.microsoft.com/v1.0/users/{bridgeLeadEntraId}/teamwork/sendActivityNotification");
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
+
+            // Requires Teams activity notification permissions and a valid activity type in the Teams app manifest.
+            var payload = new
+            {
+                topic = new
+                {
+                    source = "text",
+                    value = "Bridge Lead Update",
+                    webUrl = "https://teams.microsoft.com"
+                },
+                activityType = "taskCreated",
+                previewText = new
+                {
+                    content = message
+                },
+                templateParameters = new[]
+                {
+                    new { name = "content", value = message }
+                }
+            };
+
+            request.Content = JsonContent.Create(payload);
+            using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (response.IsSuccessStatusCode)
+            {
+                return true;
+            }
+
+            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            _logger.LogWarning(
+                "Fallback activity notification failed for bridgeLeadId={BridgeLeadId}. Status={Status}, Body={Body}",
+                bridgeLeadEntraId,
+                (int)response.StatusCode,
+                body);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Fallback activity notification exception for bridgeLeadId={BridgeLeadId}.", bridgeLeadEntraId);
+            return false;
+        }
     }
 }
