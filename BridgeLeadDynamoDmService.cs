@@ -248,7 +248,9 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
 
         return text.Contains("application-only context only for import purposes", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("requires one of 'Teamwork.Migrate.All'", StringComparison.OrdinalIgnoreCase) ||
-               text.Contains("Missing role permissions on the request", StringComparison.OrdinalIgnoreCase);
+               text.Contains("Missing role permissions on the request", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("Cannot create one-on-one chat with duplicate members", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("Duplicate chat members is specified", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<bool> TrySendActivityNotificationAsync(string bridgeLeadEntraId, string message, CancellationToken cancellationToken)
