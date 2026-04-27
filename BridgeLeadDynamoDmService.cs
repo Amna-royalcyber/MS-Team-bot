@@ -8,6 +8,7 @@ using Azure.Identity;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Graph;
+using Microsoft.Graph.Models.ODataErrors;
 using Microsoft.Graph.Models;
 
 namespace TeamsMediaBot;
@@ -98,6 +99,17 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
             }
             catch (Exception ex)
             {
+                if (IsNonRetryableAppOnlyChatPostError(ex))
+                {
+                    _logger.LogError(
+                        ex,
+                        "Bridge-lead DM cannot be sent via Graph app-only chat message POST for meetingId={MeetingId}, bridgeLeadId={BridgeLeadId}. " +
+                        "This is non-retryable with current permissions/model. Use delegated auth/proactive bot message or migration scope flow.",
+                        meetingId,
+                        bridgeLeadId);
+                    continue;
+                }
+
                 _sentKeys.TryRemove(dedupeKey, out _);
                 _logger.LogError(
                     ex,
@@ -206,5 +218,18 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
         return Convert.ToHexString(bytes);
+    }
+
+    private static bool IsNonRetryableAppOnlyChatPostError(Exception ex)
+    {
+        var text = ex.ToString();
+        if (ex is ODataError odata && !string.IsNullOrWhiteSpace(odata.Error?.Message))
+        {
+            text = odata.Error.Message;
+        }
+
+        return text.Contains("application-only context only for import purposes", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("requires one of 'Teamwork.Migrate.All'", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("Missing role permissions on the request", StringComparison.OrdinalIgnoreCase);
     }
 }
