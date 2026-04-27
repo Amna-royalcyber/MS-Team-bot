@@ -71,6 +71,21 @@ public sealed class BotSettings
 
     /// <summary>How often to retry roster/mediaStreams → Entra correlation for unresolved sources.</summary>
     public int IdentityResolutionRetrySeconds { get; init; } = 2;
+
+    /// <summary>DynamoDB table that stores meeting summaries/response payloads.</summary>
+    public string? DynamoMeetingRecordsTableName { get; init; }
+
+    /// <summary>AWS region for DynamoDB polling (for example: us-east-1).</summary>
+    public string? DynamoRegion { get; init; }
+
+    /// <summary>Polling cadence in seconds for DynamoDB bridge lead notifications.</summary>
+    public int DynamoPollIntervalSeconds { get; init; } = 60;
+
+    /// <summary>
+    /// Entra user object id used as sender while creating Teams one-on-one chats through Graph.
+    /// Required for app-only DM flow.
+    /// </summary>
+    public string? BotDmSenderUserObjectId { get; init; }
 }
 
 public sealed class BotService

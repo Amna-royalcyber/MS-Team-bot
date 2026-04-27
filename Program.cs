@@ -65,6 +65,13 @@ public static class Program
             TranscribePartialMinIntervalMilliseconds = ReadInt(builder.Configuration, "BOT_TRANSCRIBE_PARTIAL_MS", "Bot:TranscribePartialMinIntervalMilliseconds", 90),
             TranscriptTimelineMergeMilliseconds = ReadInt(builder.Configuration, "BOT_TRANSCRIPT_TIMELINE_MS", "Bot:TranscriptTimelineMergeMilliseconds", 20),
             TranscriptAlbEndpoint = ReadOptional(builder.Configuration, "BOT_TRANSCRIPT_ALB_ENDPOINT", "Bot:TranscriptAlbEndpoint"),
+            DynamoMeetingRecordsTableName = ReadOptional(builder.Configuration, "BOT_DYNAMO_TABLE_NAME", "Bot:DynamoMeetingRecordsTableName"),
+            DynamoRegion = ReadOptional(builder.Configuration, "BOT_DYNAMO_REGION", "Bot:DynamoRegion"),
+            DynamoPollIntervalSeconds = Math.Clamp(
+                ReadInt(builder.Configuration, "BOT_DYNAMO_POLL_SECONDS", "Bot:DynamoPollIntervalSeconds", 60),
+                30,
+                600),
+            BotDmSenderUserObjectId = ReadOptional(builder.Configuration, "BOT_DM_SENDER_USER_ID", "Bot:BotDmSenderUserObjectId"),
             IdentityAudioBufferMilliseconds = Math.Clamp(
                 ReadInt(builder.Configuration, "BOT_IDENTITY_AUDIO_BUFFER_MS", "Bot:IdentityAudioBufferMilliseconds", 7000),
                 5000,
@@ -95,6 +102,7 @@ public static class Program
         builder.Services.AddSingleton<MediaHandler>();
         builder.Services.AddSingleton<CallHandler>();
         builder.Services.AddSingleton<BotService>();
+        builder.Services.AddHostedService<BridgeLeadDynamoDmService>();
 
         var app = builder.Build();
 
