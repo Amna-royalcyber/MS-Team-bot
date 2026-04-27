@@ -115,6 +115,20 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
         var senderId = string.IsNullOrWhiteSpace(_settings.BotDmSenderUserObjectId)
             ? bridgeLeadEntraId
             : _settings.BotDmSenderUserObjectId.Trim();
+
+        if (string.Equals(senderId, bridgeLeadEntraId, StringComparison.OrdinalIgnoreCase))
+        {
+            var existingChatId = await FindExistingOneOnOneChatIdAsync(bridgeLeadEntraId, cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(existingChatId))
+            {
+                throw new InvalidOperationException(
+                    "Cannot create one-on-one chat with duplicate members. Set BotDmSenderUserObjectId to a different Entra user id, or ensure an existing personal chat is available.");
+            }
+
+            await PostMessageAsync(existingChatId, message, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         var chat = new Chat
         {
             ChatType = ChatType.OneOnOne,
@@ -131,7 +145,12 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
             throw new InvalidOperationException("Graph returned empty chat id while creating personal chat.");
         }
 
-        await _graph.Chats[createdChat.Id].Messages.PostAsync(
+        await PostMessageAsync(createdChat.Id, message, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task PostMessageAsync(string chatId, string message, CancellationToken cancellationToken)
+    {
+        await _graph.Chats[chatId].Messages.PostAsync(
             new ChatMessage
             {
                 Body = new ItemBody
@@ -141,6 +160,19 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                 }
             },
             cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<string?> FindExistingOneOnOneChatIdAsync(string userObjectId, CancellationToken cancellationToken)
+    {
+        var chats = await _graph.Users[userObjectId].Chats.GetAsync(
+            requestConfiguration =>
+            {
+                requestConfiguration.QueryParameters.Filter = "chatType eq 'oneOnOne'";
+                requestConfiguration.QueryParameters.Top = 1;
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        return chats?.Value?.FirstOrDefault()?.Id;
     }
 
     private static AadUserConversationMember BuildMember(string userObjectId)
