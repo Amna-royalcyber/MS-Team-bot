@@ -118,8 +118,23 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                 var dmSent = await SendMessageToLeadAsync(bridgeLeadId.Trim(), generatedResponse.Trim(), cancellationToken).ConfigureAwait(false);
                 if (!dmSent)
                 {
-                    throw new InvalidOperationException(
-                        $"Failed sending Graph DM to bridge lead {bridgeLeadId}. Check OData logs for details.");
+                    var fallbackSent = await TrySendActivityNotificationAsync(bridgeLeadId.Trim(), generatedResponse.Trim(), cancellationToken)
+                        .ConfigureAwait(false);
+                    if (fallbackSent)
+                    {
+                        _logger.LogInformation(
+                            "Bridge-lead fallback activity notification sent after DM failure: meetingId={MeetingId}, bridgeLeadId={BridgeLeadId}.",
+                            meetingId,
+                            bridgeLeadId);
+                        continue;
+                    }
+
+                    _sentKeys.TryRemove(dedupeKey, out _);
+                    _logger.LogError(
+                        "Bridge-lead DM failed and fallback activity notification failed: meetingId={MeetingId}, bridgeLeadId={BridgeLeadId}.",
+                        meetingId,
+                        bridgeLeadId);
+                    continue;
                 }
                 _logger.LogInformation(
                     "Bridge-lead chat DM sent from Dynamo record: meetingId={MeetingId}, bridgeLeadId={BridgeLeadId}.",
