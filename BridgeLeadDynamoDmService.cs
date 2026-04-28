@@ -115,7 +115,12 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                     continue;
                 }
 
-                await SendMessageToLeadAsync(bridgeLeadId.Trim(), generatedResponse.Trim(), cancellationToken).ConfigureAwait(false);
+                var dmSent = await SendMessageToLeadAsync(bridgeLeadId.Trim(), generatedResponse.Trim(), cancellationToken).ConfigureAwait(false);
+                if (!dmSent)
+                {
+                    throw new InvalidOperationException(
+                        $"Failed sending Graph DM to bridge lead {bridgeLeadId}. Check OData logs for details.");
+                }
                 _logger.LogInformation(
                     "Bridge-lead chat DM sent from Dynamo record: meetingId={MeetingId}, bridgeLeadId={BridgeLeadId}.",
                     meetingId,
@@ -156,56 +161,69 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
         }
     }
 
-    private async Task SendMessageToLeadAsync(string bridgeLeadEntraId, string message, CancellationToken cancellationToken)
+    private async Task<bool> SendMessageToLeadAsync(string bridgeLeadEntraId, string message, CancellationToken cancellationToken)
     {
-        // Graph oneOnOne chat members must be user identities.
-        // We use configured sender user id (when present) plus bridge lead user id.
-        // Bot app id itself cannot be used directly as an AadUserConversationMember.
-        var senderId = string.IsNullOrWhiteSpace(_settings.BotDmSenderUserObjectId)
-            ? bridgeLeadEntraId
-            : _settings.BotDmSenderUserObjectId.Trim();
+        if (string.IsNullOrWhiteSpace(bridgeLeadEntraId))
+        {
+            return false;
+        }
 
         try
         {
-            if (string.Equals(senderId, bridgeLeadEntraId, StringComparison.OrdinalIgnoreCase))
-            {
-                var existingChatId = await FindExistingOneOnOneChatIdAsync(bridgeLeadEntraId, cancellationToken).ConfigureAwait(false);
-                if (string.IsNullOrWhiteSpace(existingChatId))
-                {
-                    throw new InvalidOperationException(
-                        "Cannot create one-on-one chat with duplicate members. Set BotDmSenderUserObjectId to a different Entra user id, or ensure an existing personal chat is available.");
-                }
+            var botMemberId = string.IsNullOrWhiteSpace(_settings.BotDmSenderUserObjectId)
+                ? _settings.ClientId
+                : _settings.BotDmSenderUserObjectId.Trim();
 
-                await PostMessageAsync(existingChatId, message, cancellationToken).ConfigureAwait(false);
-                return;
-            }
-
-            var chat = new Chat
+            // 1. Define the 1:1 Chat thread between the Bot and the User
+            var chatRequest = new Chat
             {
                 ChatType = ChatType.OneOnOne,
                 Members = new List<ConversationMember>
                 {
-                    BuildMember(senderId),
-                    BuildMember(bridgeLeadEntraId)
+                    new AadUserConversationMember
+                    {
+                        Roles = new List<string> { "owner" },
+                        AdditionalData = new Dictionary<string, object>
+                        {
+                            ["user@odata.bind"] = $"https://graph.microsoft.com/v1.0/users('{bridgeLeadEntraId}')"
+                        }
+                    },
+                    new AadUserConversationMember
+                    {
+                        Roles = new List<string> { "owner" },
+                        AdditionalData = new Dictionary<string, object>
+                        {
+                            ["user@odata.bind"] = $"https://graph.microsoft.com/v1.0/users('{botMemberId}')"
+                        }
+                    }
                 }
             };
 
-            var createdChat = await _graph.Chats.PostAsync(chat, cancellationToken: cancellationToken).ConfigureAwait(false);
-            if (string.IsNullOrWhiteSpace(createdChat?.Id))
+            // 2. Create or Get the Chat ID (Graph handles the "Get" if it already exists)
+            var chat = await _graph.Chats.PostAsync(chatRequest, cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (chat is null || string.IsNullOrWhiteSpace(chat.Id))
             {
-                throw new InvalidOperationException("Graph returned empty chat id while creating personal chat.");
+                _logger.LogError("Could not create/retrieve chat for lead: {BridgeLeadId}", bridgeLeadEntraId);
+                return false;
             }
 
-            await PostMessageAsync(createdChat.Id, message, cancellationToken).ConfigureAwait(false);
+            // 3. Post the actual message to that Chat ID
+            await PostMessageAsync(chat.Id, message, cancellationToken).ConfigureAwait(false);
+            _logger.LogInformation("Successfully sent Personal DM to Bridge Lead {Id}", bridgeLeadEntraId);
+            return true;
         }
-        catch (ODataError ex)
+        catch (ODataError odataError)
         {
             _logger.LogError(
-                ex,
-                "Graph DM failed for bridgeLeadId={BridgeLeadId}. " +
-                "This usually means missing permissions, app-only import-only restriction, or recipient has not established required Teams app context.",
-                bridgeLeadEntraId);
-            throw;
+                "Graph API Error: {Code} - {Msg}",
+                odataError.Error?.Code,
+                odataError.Error?.Message);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to send DM to Lead {Id}", bridgeLeadEntraId);
+            return false;
         }
     }
 
@@ -221,31 +239,6 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                 }
             },
             cancellationToken: cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task<string?> FindExistingOneOnOneChatIdAsync(string userObjectId, CancellationToken cancellationToken)
-    {
-        var chats = await _graph.Users[userObjectId].Chats.GetAsync(
-            requestConfiguration =>
-            {
-                requestConfiguration.QueryParameters.Filter = "chatType eq 'oneOnOne'";
-                requestConfiguration.QueryParameters.Top = 1;
-            },
-            cancellationToken).ConfigureAwait(false);
-
-        return chats?.Value?.FirstOrDefault()?.Id;
-    }
-
-    private static AadUserConversationMember BuildMember(string userObjectId)
-    {
-        return new AadUserConversationMember
-        {
-            Roles = new List<string> { "owner" },
-            AdditionalData = new Dictionary<string, object>
-            {
-                ["user@odata.bind"] = $"https://graph.microsoft.com/v1.0/users('{userObjectId}')"
-            }
-        };
     }
 
     private static string? ReadString(IDictionary<string, AttributeValue> item, string key)
