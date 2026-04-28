@@ -86,6 +86,9 @@ public sealed class BotSettings
     /// Required for app-only DM flow.
     /// </summary>
     public string? BotDmSenderUserObjectId { get; init; }
+
+    /// <summary>Teams app catalog id used to proactively install the app for recipients before notifications.</summary>
+    public string? TeamsAppId { get; init; }
 }
 
 public sealed class BotService

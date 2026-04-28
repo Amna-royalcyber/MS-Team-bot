@@ -100,7 +100,7 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                 // Preferred bot path: Teams activity notification (works without separate sender user id).
                 if (string.IsNullOrWhiteSpace(_settings.BotDmSenderUserObjectId))
                 {
-                    var sent = await TrySendActivityNotificationAsync(bridgeLeadId.Trim(), generatedResponse.Trim(), cancellationToken)
+                    var sent = await SendFallbackActivityNotificationAsync(bridgeLeadId.Trim(), generatedResponse.Trim(), cancellationToken)
                         .ConfigureAwait(false);
                     if (!sent)
                     {
@@ -118,7 +118,7 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                 var dmSent = await SendMessageToLeadAsync(bridgeLeadId.Trim(), generatedResponse.Trim(), cancellationToken).ConfigureAwait(false);
                 if (!dmSent)
                 {
-                    var fallbackSent = await TrySendActivityNotificationAsync(bridgeLeadId.Trim(), generatedResponse.Trim(), cancellationToken)
+                    var fallbackSent = await SendFallbackActivityNotificationAsync(bridgeLeadId.Trim(), generatedResponse.Trim(), cancellationToken)
                         .ConfigureAwait(false);
                     if (fallbackSent)
                     {
@@ -145,7 +145,7 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
             {
                 if (IsNonRetryableAppOnlyChatPostError(ex))
                 {
-                    var fallbackSent = await TrySendActivityNotificationAsync(bridgeLeadId.Trim(), generatedResponse.Trim(), cancellationToken)
+                    var fallbackSent = await SendFallbackActivityNotificationAsync(bridgeLeadId.Trim(), generatedResponse.Trim(), cancellationToken)
                         .ConfigureAwait(false);
                     if (fallbackSent)
                     {
@@ -185,6 +185,34 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
 
         try
         {
+            if (!string.IsNullOrWhiteSpace(_settings.TeamsAppId))
+            {
+                var userAppInstallation = new UserScopeTeamsAppInstallation
+                {
+                    AdditionalData = new Dictionary<string, object>
+                    {
+                        ["teamsApp@odata.bind"] = $"https://graph.microsoft.com/v1.0/appCatalogs/teamsApps/{_settings.TeamsAppId.Trim()}"
+                    }
+                };
+
+                try
+                {
+                    await _graph.Users[bridgeLeadEntraId].Teamwork.InstalledApps
+                        .PostAsync(userAppInstallation, cancellationToken: cancellationToken).ConfigureAwait(false);
+                    _logger.LogInformation("Proactively installed app for user {Id}", bridgeLeadEntraId);
+                }
+                catch (ODataError ex) when (string.Equals(ex.Error?.Code, "Conflict", StringComparison.OrdinalIgnoreCase))
+                {
+                    // App already installed for this user.
+                }
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "TeamsAppId is not configured. Skipping proactive app installation for user {Id}; fallback activity notifications may fail with 403.",
+                    bridgeLeadEntraId);
+            }
+
             var botMemberId = string.IsNullOrWhiteSpace(_settings.BotDmSenderUserObjectId)
                 ? _settings.ClientId
                 : _settings.BotDmSenderUserObjectId.Trim();
@@ -292,7 +320,7 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                text.Contains("Duplicate chat members is specified", StringComparison.OrdinalIgnoreCase);
     }
 
-    private async Task<bool> TrySendActivityNotificationAsync(string bridgeLeadEntraId, string message, CancellationToken cancellationToken)
+    private async Task<bool> SendFallbackActivityNotificationAsync(string bridgeLeadEntraId, string message, CancellationToken cancellationToken)
     {
         try
         {
@@ -302,7 +330,7 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                 $"https://graph.microsoft.com/v1.0/users/{bridgeLeadEntraId}/teamwork/sendActivityNotification");
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
 
-            // Requires Teams activity notification permissions and a valid activity type in the Teams app manifest.
+            // Requires TeamsActivity.Send (or TeamsActivity.Send.User) and a valid activityType in the Teams app manifest.
             var payload = new
             {
                 topic = new
