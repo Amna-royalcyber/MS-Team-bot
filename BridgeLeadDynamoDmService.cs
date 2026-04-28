@@ -205,6 +205,23 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                 {
                     // App already installed for this user.
                 }
+                catch (ODataError ex)
+                {
+                    _logger.LogWarning(
+                        "App install attempt failed for user {Id}. TeamsAppId={TeamsAppId}, GraphCode={Code}, GraphMessage={Message}",
+                        bridgeLeadEntraId,
+                        _settings.TeamsAppId,
+                        ex.Error?.Code,
+                        ex.Error?.Message);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Unexpected exception during app install attempt for user {Id}. TeamsAppId={TeamsAppId}",
+                        bridgeLeadEntraId,
+                        _settings.TeamsAppId);
+                }
             }
             else
             {
