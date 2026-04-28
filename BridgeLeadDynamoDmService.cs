@@ -115,7 +115,7 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                     continue;
                 }
 
-                await SendDirectMessageAsync(bridgeLeadId.Trim(), generatedResponse.Trim(), cancellationToken).ConfigureAwait(false);
+                await SendMessageToLeadAsync(bridgeLeadId.Trim(), generatedResponse.Trim(), cancellationToken).ConfigureAwait(false);
                 _logger.LogInformation(
                     "Bridge-lead chat DM sent from Dynamo record: meetingId={MeetingId}, bridgeLeadId={BridgeLeadId}.",
                     meetingId,
@@ -156,44 +156,57 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
         }
     }
 
-    private async Task SendDirectMessageAsync(string bridgeLeadEntraId, string message, CancellationToken cancellationToken)
+    private async Task SendMessageToLeadAsync(string bridgeLeadEntraId, string message, CancellationToken cancellationToken)
     {
-        // If sender user id is not configured, fall back to bridge_lead_id per table-driven requirement.
-        // In tenants where app-only chat posting requires an explicit sender user, set BotDmSenderUserObjectId.
+        // Graph oneOnOne chat members must be user identities.
+        // We use configured sender user id (when present) plus bridge lead user id.
+        // Bot app id itself cannot be used directly as an AadUserConversationMember.
         var senderId = string.IsNullOrWhiteSpace(_settings.BotDmSenderUserObjectId)
             ? bridgeLeadEntraId
             : _settings.BotDmSenderUserObjectId.Trim();
 
-        if (string.Equals(senderId, bridgeLeadEntraId, StringComparison.OrdinalIgnoreCase))
+        try
         {
-            var existingChatId = await FindExistingOneOnOneChatIdAsync(bridgeLeadEntraId, cancellationToken).ConfigureAwait(false);
-            if (string.IsNullOrWhiteSpace(existingChatId))
+            if (string.Equals(senderId, bridgeLeadEntraId, StringComparison.OrdinalIgnoreCase))
             {
-                throw new InvalidOperationException(
-                    "Cannot create one-on-one chat with duplicate members. Set BotDmSenderUserObjectId to a different Entra user id, or ensure an existing personal chat is available.");
+                var existingChatId = await FindExistingOneOnOneChatIdAsync(bridgeLeadEntraId, cancellationToken).ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(existingChatId))
+                {
+                    throw new InvalidOperationException(
+                        "Cannot create one-on-one chat with duplicate members. Set BotDmSenderUserObjectId to a different Entra user id, or ensure an existing personal chat is available.");
+                }
+
+                await PostMessageAsync(existingChatId, message, cancellationToken).ConfigureAwait(false);
+                return;
             }
 
-            await PostMessageAsync(existingChatId, message, cancellationToken).ConfigureAwait(false);
-            return;
-        }
-
-        var chat = new Chat
-        {
-            ChatType = ChatType.OneOnOne,
-            Members = new List<ConversationMember>
+            var chat = new Chat
             {
-                BuildMember(senderId),
-                BuildMember(bridgeLeadEntraId)
+                ChatType = ChatType.OneOnOne,
+                Members = new List<ConversationMember>
+                {
+                    BuildMember(senderId),
+                    BuildMember(bridgeLeadEntraId)
+                }
+            };
+
+            var createdChat = await _graph.Chats.PostAsync(chat, cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(createdChat?.Id))
+            {
+                throw new InvalidOperationException("Graph returned empty chat id while creating personal chat.");
             }
-        };
 
-        var createdChat = await _graph.Chats.PostAsync(chat, cancellationToken: cancellationToken).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(createdChat?.Id))
-        {
-            throw new InvalidOperationException("Graph returned empty chat id while creating personal chat.");
+            await PostMessageAsync(createdChat.Id, message, cancellationToken).ConfigureAwait(false);
         }
-
-        await PostMessageAsync(createdChat.Id, message, cancellationToken).ConfigureAwait(false);
+        catch (ODataError ex)
+        {
+            _logger.LogError(
+                ex,
+                "Graph DM failed for bridgeLeadId={BridgeLeadId}. " +
+                "This usually means missing permissions, app-only import-only restriction, or recipient has not established required Teams app context.",
+                bridgeLeadEntraId);
+            throw;
+        }
     }
 
     private async Task PostMessageAsync(string chatId, string message, CancellationToken cancellationToken)
