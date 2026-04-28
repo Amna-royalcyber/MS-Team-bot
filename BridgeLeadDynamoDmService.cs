@@ -97,9 +97,27 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
 
             try
             {
+                // Preferred bot path: Teams activity notification (works without separate sender user id).
+                if (string.IsNullOrWhiteSpace(_settings.BotDmSenderUserObjectId))
+                {
+                    var sent = await TrySendActivityNotificationAsync(bridgeLeadId.Trim(), generatedResponse.Trim(), cancellationToken)
+                        .ConfigureAwait(false);
+                    if (!sent)
+                    {
+                        throw new InvalidOperationException(
+                            "Bot-originated activity notification failed. Grant TeamsActivity.Send/TeamsActivity.Send.User application permission and admin consent.");
+                    }
+
+                    _logger.LogInformation(
+                        "Bridge-lead bot notification sent from Dynamo record: meetingId={MeetingId}, bridgeLeadId={BridgeLeadId}.",
+                        meetingId,
+                        bridgeLeadId);
+                    continue;
+                }
+
                 await SendDirectMessageAsync(bridgeLeadId.Trim(), generatedResponse.Trim(), cancellationToken).ConfigureAwait(false);
                 _logger.LogInformation(
-                    "Bridge-lead DM sent from Dynamo record: meetingId={MeetingId}, bridgeLeadId={BridgeLeadId}.",
+                    "Bridge-lead chat DM sent from Dynamo record: meetingId={MeetingId}, bridgeLeadId={BridgeLeadId}.",
                     meetingId,
                     bridgeLeadId);
             }
