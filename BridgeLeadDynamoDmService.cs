@@ -270,7 +270,7 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                 {
                     source = "text",
                     value = "Bridge Lead Update",
-                    webUrl = "https://teams.microsoft.com"
+                    webUrl = "https://teams.microsoft.com/l/chat/0/0"
                 },
                 activityType = "taskCreated",
                 previewText = new
