@@ -5,6 +5,7 @@ using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Bot.Builder;
 using Microsoft.Bot.Builder.BotFramework;
+using Microsoft.Bot.Builder.Integration.AspNet.Core;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -120,7 +121,8 @@ public static class Program
             };
             var configuration = new ConfigurationBuilder().AddInMemoryCollection(inMemory!).Build();
             var authentication = new ConfigurationBotFrameworkAuthentication(configuration);
-            return new CloudAdapter(authentication);
+            var log = sp.GetRequiredService<ILoggerFactory>().CreateLogger<CloudAdapter>();
+            return new CloudAdapter(authentication, log);
         });
         builder.Services.AddSingleton<BridgeLeadTeamsBot>();
         builder.Services.AddSingleton<IBot>(sp => sp.GetRequiredService<BridgeLeadTeamsBot>());

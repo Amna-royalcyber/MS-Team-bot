@@ -23,7 +23,7 @@ public sealed class BridgeLeadTeamsBot : ActivityHandler
         var oid = turnContext.Activity.From?.AadObjectId;
         if (!string.IsNullOrWhiteSpace(oid))
         {
-            var reference = TurnContext.GetConversationReference(turnContext.Activity);
+            var reference = turnContext.Activity.GetConversationReference();
             _references.Upsert(oid, reference);
             _logger.LogInformation("Stored Teams conversation reference for Entra user {Oid}.", oid);
         }
@@ -48,7 +48,7 @@ public sealed class BridgeLeadTeamsBot : ActivityHandler
             var oid = member.AadObjectId;
             if (!string.IsNullOrWhiteSpace(oid))
             {
-                var reference = TurnContext.GetConversationReference(turnContext.Activity);
+                var reference = turnContext.Activity.GetConversationReference();
                 _references.Upsert(oid, reference);
                 _logger.LogInformation("Stored Teams conversation reference from membersAdded for Entra user {Oid}.", oid);
             }
