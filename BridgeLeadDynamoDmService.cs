@@ -341,53 +341,58 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
         try
         {
             var token = await _credential.GetTokenAsync(new TokenRequestContext(GraphScopes), cancellationToken).ConfigureAwait(false);
-            using var request = new HttpRequestMessage(
-                HttpMethod.Post,
-                $"https://graph.microsoft.com/v1.0/users/{bridgeLeadEntraId}/teamwork/sendActivityNotification");
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
-
-            // Requires TeamsActivity.Send (or TeamsActivity.Send.User) and a valid activityType in the Teams app manifest.
-            var payload = new
+            // Try a few template parameter shapes to tolerate manifest drift while app package versions propagate.
+            var payloads = new object[]
             {
-                topic = new
-                {
-                    source = "text",
-                    value = "Bridge Lead Update",
-                    webUrl = "https://teams.microsoft.com/l/chat/0/0"
-                },
-                activityType = "taskCreated",
-                previewText = new
-                {
-                    content = message
-                },
-                templateParameters = new[]
-                {
-                    new { name = "actor", value = "Teams Meeting Transcription Bot" },
-                    new { name = "content", value = message }
-                }
+                BuildActivityPayload(message, includeActorAndContent: true, includeContentOnly: false),
+                BuildActivityPayload(message, includeActorAndContent: false, includeContentOnly: true),
+                BuildActivityPayload(message, includeActorAndContent: false, includeContentOnly: false)
             };
 
-            request.Content = JsonContent.Create(payload);
-            using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            if (response.IsSuccessStatusCode)
+            for (var i = 0; i < payloads.Length; i++)
             {
-                var requestId = response.Headers.TryGetValues("request-id", out var values)
-                    ? string.Join(",", values)
-                    : "n/a";
-                _logger.LogInformation(
-                    "Activity notification accepted for bridgeLeadId={BridgeLeadId}. Status={Status}, RequestId={RequestId}",
+                using var request = new HttpRequestMessage(
+                    HttpMethod.Post,
+                    $"https://graph.microsoft.com/v1.0/users/{bridgeLeadEntraId}/teamwork/sendActivityNotification");
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
+                request.Content = JsonContent.Create(payloads[i]);
+
+                using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                if (response.IsSuccessStatusCode)
+                {
+                    var requestId = response.Headers.TryGetValues("request-id", out var values)
+                        ? string.Join(",", values)
+                        : "n/a";
+                    _logger.LogInformation(
+                        "Activity notification accepted for bridgeLeadId={BridgeLeadId}. Status={Status}, RequestId={RequestId}, Attempt={Attempt}",
+                        bridgeLeadEntraId,
+                        (int)response.StatusCode,
+                        requestId,
+                        i + 1);
+                    return true;
+                }
+
+                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var isTemplateArityError = (int)response.StatusCode == 400 &&
+                                           body.Contains("Incorrect template parameter arity", StringComparison.OrdinalIgnoreCase);
+                if (isTemplateArityError && i < payloads.Length - 1)
+                {
+                    _logger.LogWarning(
+                        "Activity notification template mismatch for bridgeLeadId={BridgeLeadId}; retrying with alternate parameter shape. Attempt={Attempt}, Body={Body}",
+                        bridgeLeadEntraId,
+                        i + 1,
+                        body);
+                    continue;
+                }
+
+                _logger.LogWarning(
+                    "Fallback activity notification failed for bridgeLeadId={BridgeLeadId}. Status={Status}, Body={Body}",
                     bridgeLeadEntraId,
                     (int)response.StatusCode,
-                    requestId);
-                return true;
+                    body);
+                return false;
             }
 
-            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            _logger.LogWarning(
-                "Fallback activity notification failed for bridgeLeadId={BridgeLeadId}. Status={Status}, Body={Body}",
-                bridgeLeadEntraId,
-                (int)response.StatusCode,
-                body);
             return false;
         }
         catch (Exception ex)
@@ -395,5 +400,41 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
             _logger.LogWarning(ex, "Fallback activity notification exception for bridgeLeadId={BridgeLeadId}.", bridgeLeadEntraId);
             return false;
         }
+    }
+
+    private static object BuildActivityPayload(string message, bool includeActorAndContent, bool includeContentOnly)
+    {
+        object[] templateParameters = Array.Empty<object>();
+        if (includeActorAndContent)
+        {
+            templateParameters = new object[]
+            {
+                new { name = "actor", value = "Teams Meeting Transcription Bot" },
+                new { name = "content", value = message }
+            };
+        }
+        else if (includeContentOnly)
+        {
+            templateParameters = new object[]
+            {
+                new { name = "content", value = message }
+            };
+        }
+
+        return new
+        {
+            topic = new
+            {
+                source = "text",
+                value = "Bridge Lead Update",
+                webUrl = "https://teams.microsoft.com/l/chat/0/0"
+            },
+            activityType = "taskCreated",
+            previewText = new
+            {
+                content = message
+            },
+            templateParameters
+        };
     }
 }
