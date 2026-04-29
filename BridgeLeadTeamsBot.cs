@@ -33,6 +33,24 @@ public sealed class BridgeLeadTeamsBot : ActivityHandler
             cancellationToken).ConfigureAwait(false);
     }
 
+    protected override async Task OnInstallationUpdateAddAsync(
+        ITurnContext<IInstallationUpdateActivity> turnContext,
+        CancellationToken cancellationToken)
+    {
+        var oid = turnContext.Activity.From?.AadObjectId;
+        if (!string.IsNullOrWhiteSpace(oid))
+        {
+            var reference = turnContext.Activity.GetConversationReference();
+            _references.Upsert(oid, reference);
+            _logger.LogInformation("Stored Teams conversation reference from app installation for Entra user {Oid}.", oid);
+        }
+
+        await turnContext.SendActivityAsync(
+            MessageFactory.Text("Teams Meeting Transcription is installed. Bridge-lead alerts will appear in this chat when DynamoDB posts updates."),
+            cancellationToken).ConfigureAwait(false);
+        await base.OnInstallationUpdateAddAsync(turnContext, cancellationToken).ConfigureAwait(false);
+    }
+
     protected override async Task OnMembersAddedAsync(
         IList<ChannelAccount> membersAdded,
         ITurnContext<IConversationUpdateActivity> turnContext,

@@ -32,7 +32,11 @@ public sealed class TeamsProactiveMessagingService
     {
         if (!_references.TryGet(entraUserObjectId, out var reference) || reference is null)
         {
-            _logger.LogWarning("No stored Teams conversation reference for Entra user {Oid}; user must message the bot once in Teams personal chat.", entraUserObjectId);
+            _logger.LogWarning(
+                "No stored Bot Framework conversation for Entra user {Oid}. " +
+                "Open the bot in Teams (personal chat), send any message once, or reinstall the app so the bot can store a conversation reference. " +
+                "Ensure Azure Bot messaging endpoint points to https://<your-host>/api/messages and matches this deployment.",
+                entraUserObjectId);
             return false;
         }
 

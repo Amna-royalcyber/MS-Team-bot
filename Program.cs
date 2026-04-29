@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Bot.Builder;
 using Microsoft.Bot.Builder.BotFramework;
 using Microsoft.Bot.Builder.Integration.AspNet.Core;
+using Microsoft.Bot.Schema;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -78,6 +79,7 @@ public static class Program
             BotDmSenderUserObjectId = ReadOptional(builder.Configuration, "BOT_DM_SENDER_USER_ID", "Bot:BotDmSenderUserObjectId"),
             TeamsAppId = ReadOptional(builder.Configuration, "BOT_TEAMS_APP_ID", "Bot:TeamsAppId"),
             TeamsManifestAppId = ReadOptional(builder.Configuration, "BOT_TEAMS_MANIFEST_APP_ID", "Bot:TeamsManifestAppId"),
+            MicrosoftAppType = ReadOptional(builder.Configuration, "BOT_MICROSOFT_APP_TYPE", "Bot:MicrosoftAppType") ?? "SingleTenant",
             IdentityAudioBufferMilliseconds = Math.Clamp(
                 ReadInt(builder.Configuration, "BOT_IDENTITY_AUDIO_BUFFER_MS", "Bot:IdentityAudioBufferMilliseconds", 7000),
                 5000,
@@ -112,17 +114,42 @@ public static class Program
         builder.Services.AddSingleton<CloudAdapter>(sp =>
         {
             var settings = sp.GetRequiredService<BotSettings>();
+            var appType = string.IsNullOrWhiteSpace(settings.MicrosoftAppType)
+                ? "SingleTenant"
+                : settings.MicrosoftAppType.Trim();
             var inMemory = new Dictionary<string, string?>
             {
                 ["MicrosoftAppId"] = settings.ClientId,
                 ["MicrosoftAppPassword"] = settings.ClientSecret,
-                ["MicrosoftAppType"] = "SingleTenant",
-                ["MicrosoftAppTenantId"] = settings.TenantId
+                ["MicrosoftAppType"] = appType
             };
+            if (string.Equals(appType, "SingleTenant", StringComparison.OrdinalIgnoreCase))
+            {
+                inMemory["MicrosoftAppTenantId"] = settings.TenantId;
+            }
+
             var configuration = new ConfigurationBuilder().AddInMemoryCollection(inMemory!).Build();
             var authentication = new ConfigurationBotFrameworkAuthentication(configuration);
-            var log = sp.GetRequiredService<ILoggerFactory>().CreateLogger<CloudAdapter>();
-            return new CloudAdapter(authentication, log);
+            var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+            var adapter = new CloudAdapter(authentication, loggerFactory.CreateLogger<CloudAdapter>());
+            adapter.OnTurnError = async (turnContext, exception) =>
+            {
+                loggerFactory.CreateLogger("BotFramework").LogError(exception, "Bot OnTurnError");
+                if (turnContext?.Activity?.ChannelId != null)
+                {
+                    try
+                    {
+                        await turnContext.SendActivityAsync(
+                            MessageFactory.Text("The bot hit an error processing your message. Please try again."),
+                            CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // ignore secondary failures
+                    }
+                }
+            };
+            return adapter;
         });
         builder.Services.AddSingleton<BridgeLeadTeamsBot>();
         builder.Services.AddSingleton<IBot>(sp => sp.GetRequiredService<BridgeLeadTeamsBot>());

@@ -95,6 +95,9 @@ public sealed class BotSettings
     /// deep link <c>https://teams.microsoft.com/l/app/{id}</c> so the user can open the bot from the notification.
     /// </summary>
     public string? TeamsManifestAppId { get; init; }
+
+    /// <summary>Azure Bot registration type: <c>SingleTenant</c> or <c>MultiTenant</c>. Must match Azure Bot configuration.</summary>
+    public string MicrosoftAppType { get; init; } = "SingleTenant";
 }
 
 public sealed class BotService
