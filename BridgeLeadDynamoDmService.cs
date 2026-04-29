@@ -234,46 +234,16 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                     bridgeLeadEntraId);
             }
 
-            var initiatorUserObjectId = _settings.BotDmSenderUserObjectId?.Trim();
-            if (string.IsNullOrWhiteSpace(initiatorUserObjectId))
+            // App-only proactive pattern: use activity notification as primary delivery mechanism.
+            var sent = await SendFallbackActivityNotificationAsync(bridgeLeadEntraId, message, cancellationToken).ConfigureAwait(false);
+            if (sent)
             {
-                _logger.LogWarning(
-                    "BotDmSenderUserObjectId is not configured. Cannot initiate Graph one-on-one chat DM flow.");
-                return false;
-            }
-            if (string.Equals(initiatorUserObjectId, bridgeLeadEntraId, StringComparison.OrdinalIgnoreCase))
-            {
-                _logger.LogWarning(
-                    "BotDmSenderUserObjectId and bridgeLeadEntraId are the same ({Id}). One-on-one chat creation requires two distinct users.",
-                    bridgeLeadEntraId);
-                return false;
+                _logger.LogInformation("Successfully sent proactive bot notification to Bridge Lead {Id}", bridgeLeadEntraId);
+                return true;
             }
 
-            // Proactive bot pattern with Graph app-only: create chat between two Entra users
-            // (initiator service account + bridge lead). Do not use app/client id as a chat member.
-            var chatRequest = new Chat
-            {
-                ChatType = ChatType.OneOnOne,
-                Members = new List<ConversationMember>
-                {
-                    BuildUserConversationMember(initiatorUserObjectId),
-                    BuildUserConversationMember(bridgeLeadEntraId)
-                }
-            };
-
-            // 2. Create or Get the Chat ID (Graph handles the "Get" if it already exists)
-            var chat = await ExecuteGraphWithReauthAsync(
-                client => client.Chats.PostAsync(chatRequest, cancellationToken: cancellationToken)).ConfigureAwait(false);
-            if (chat is null || string.IsNullOrWhiteSpace(chat.Id))
-            {
-                _logger.LogError("Could not create/retrieve chat for lead: {BridgeLeadId}", bridgeLeadEntraId);
-                return false;
-            }
-
-            // 3. Post the actual message to that Chat ID
-            await PostMessageAsync(chat.Id, message, cancellationToken).ConfigureAwait(false);
-            _logger.LogInformation("Successfully sent Personal DM to Bridge Lead {Id}", bridgeLeadEntraId);
-            return true;
+            _logger.LogWarning("Proactive bot notification failed for Bridge Lead {Id}.", bridgeLeadEntraId);
+            return false;
         }
         catch (ODataError odataError)
         {
@@ -288,78 +258,6 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
             _logger.LogError(ex, "Failed to send DM to Lead {Id}", bridgeLeadEntraId);
             return false;
         }
-    }
-
-    private async Task PostMessageAsync(string chatId, string message, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(chatId))
-        {
-            throw new InvalidOperationException("Cannot post message because chatId is empty.");
-        }
-
-        try
-        {
-            // Uses Graph /chats/{chat-id}/messages endpoint for bot-created chat.
-            await ExecuteGraphWithReauthAsync(
-                client => client.Chats[chatId].Messages.PostAsync(
-                    new ChatMessage
-                    {
-                        Body = new ItemBody
-                        {
-                            ContentType = BodyType.Text,
-                            Content = message
-                        }
-                    },
-                    cancellationToken: cancellationToken)).ConfigureAwait(false);
-        }
-        catch (ODataError ex) when (string.Equals(ex.Error?.Code, "Unauthorized", StringComparison.OrdinalIgnoreCase))
-        {
-            _logger.LogError(
-                "Graph chat message post unauthorized for chatId={ChatId}. Code={Code}, Message={Message}",
-                chatId,
-                ex.Error?.Code,
-                ex.Error?.Message);
-            throw;
-        }
-        catch (ODataError ex) when (string.Equals(ex.Error?.Code, "Forbidden", StringComparison.OrdinalIgnoreCase))
-        {
-            _logger.LogError(
-                "Graph chat message post forbidden for chatId={ChatId}. Code={Code}, Message={Message}",
-                chatId,
-                ex.Error?.Code,
-                ex.Error?.Message);
-            throw;
-        }
-        catch (ODataError ex) when (string.Equals(ex.Error?.Code, "NotFound", StringComparison.OrdinalIgnoreCase))
-        {
-            _logger.LogError(
-                "Graph chat/message target not found for chatId={ChatId}. Code={Code}, Message={Message}",
-                chatId,
-                ex.Error?.Code,
-                ex.Error?.Message);
-            throw;
-        }
-        catch (ODataError ex)
-        {
-            _logger.LogError(
-                "Graph chat message post failed for chatId={ChatId}. Code={Code}, Message={Message}",
-                chatId,
-                ex.Error?.Code,
-                ex.Error?.Message);
-            throw;
-        }
-    }
-
-    private static AadUserConversationMember BuildUserConversationMember(string userObjectId)
-    {
-        return new AadUserConversationMember
-        {
-            Roles = new List<string> { "owner" },
-            AdditionalData = new Dictionary<string, object>
-            {
-                ["user@odata.bind"] = $"https://graph.microsoft.com/v1.0/users('{userObjectId}')"
-            }
-        };
     }
 
     private GraphServiceClient CreateGraphClient()
@@ -433,6 +331,7 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
         return text.Contains("application-only context only for import purposes", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("requires one of 'Teamwork.Migrate.All'", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("Missing role permissions on the request", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("Message POST is allowed in application-only context only for import purposes", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("Cannot create one-on-one chat with duplicate members", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("Duplicate chat members is specified", StringComparison.OrdinalIgnoreCase);
     }
