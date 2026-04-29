@@ -137,7 +137,7 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                     continue;
                 }
                 _logger.LogInformation(
-                    "Bridge-lead chat DM sent from Dynamo record: meetingId={MeetingId}, bridgeLeadId={BridgeLeadId}.",
+                    "Bridge-lead proactive notification sent from Dynamo record: meetingId={MeetingId}, bridgeLeadId={BridgeLeadId}.",
                     meetingId,
                     bridgeLeadId);
             }
@@ -362,6 +362,7 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                 },
                 templateParameters = new[]
                 {
+                    new { name = "actor", value = "Teams Meeting Transcription Bot" },
                     new { name = "content", value = message }
                 }
             };
@@ -370,6 +371,14 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
             using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
             if (response.IsSuccessStatusCode)
             {
+                var requestId = response.Headers.TryGetValues("request-id", out var values)
+                    ? string.Join(",", values)
+                    : "n/a";
+                _logger.LogInformation(
+                    "Activity notification accepted for bridgeLeadId={BridgeLeadId}. Status={Status}, RequestId={RequestId}",
+                    bridgeLeadEntraId,
+                    (int)response.StatusCode,
+                    requestId);
                 return true;
             }
 
