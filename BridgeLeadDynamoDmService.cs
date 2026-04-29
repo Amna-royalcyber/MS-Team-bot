@@ -24,7 +24,7 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
     private readonly BotSettings _settings;
     private readonly ILogger<BridgeLeadDynamoDmService> _logger;
     private readonly IAmazonDynamoDB? _dynamo;
-    private readonly GraphServiceClient _graph;
+    private GraphServiceClient _graph;
     private readonly ClientSecretCredential _credential;
     private readonly HttpClient _http = new();
     private readonly ConcurrentDictionary<string, byte> _sentKeys = new(StringComparer.OrdinalIgnoreCase);
@@ -42,7 +42,7 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
         }
 
         _credential = new ClientSecretCredential(_settings.TenantId, _settings.ClientId, _settings.ClientSecret);
-        _graph = new GraphServiceClient(_credential, GraphScopes);
+        _graph = CreateGraphClient();
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -185,6 +185,8 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
 
         try
         {
+            await EnsureGraphClientAuthenticatedAsync(cancellationToken).ConfigureAwait(false);
+
             if (!string.IsNullOrWhiteSpace(_settings.TeamsAppId))
             {
                 var userAppInstallation = new UserScopeTeamsAppInstallation
@@ -197,8 +199,10 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
 
                 try
                 {
-                    await _graph.Users[bridgeLeadEntraId].Teamwork.InstalledApps
-                        .PostAsync(userAppInstallation, cancellationToken: cancellationToken).ConfigureAwait(false);
+                    await ExecuteGraphWithReauthAsync(
+                        client => client.Users[bridgeLeadEntraId].Teamwork.InstalledApps.PostAsync(
+                            userAppInstallation,
+                            cancellationToken: cancellationToken)).ConfigureAwait(false);
                     _logger.LogInformation("Proactively installed app for user {Id}", bridgeLeadEntraId);
                 }
                 catch (ODataError ex) when (string.Equals(ex.Error?.Code, "Conflict", StringComparison.OrdinalIgnoreCase))
@@ -230,9 +234,13 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                     bridgeLeadEntraId);
             }
 
-            var botMemberId = string.IsNullOrWhiteSpace(_settings.BotDmSenderUserObjectId)
-                ? _settings.ClientId
-                : _settings.BotDmSenderUserObjectId.Trim();
+            var botMemberId = _settings.BotDmSenderUserObjectId?.Trim();
+            if (string.IsNullOrWhiteSpace(botMemberId))
+            {
+                _logger.LogWarning(
+                    "BotDmSenderUserObjectId is not configured. Cannot initiate Graph one-on-one chat DM flow.");
+                return false;
+            }
 
             // 1. Define the 1:1 Chat thread between the Bot and the User
             var chatRequest = new Chat
@@ -260,7 +268,8 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
             };
 
             // 2. Create or Get the Chat ID (Graph handles the "Get" if it already exists)
-            var chat = await _graph.Chats.PostAsync(chatRequest, cancellationToken: cancellationToken).ConfigureAwait(false);
+            var chat = await ExecuteGraphWithReauthAsync(
+                client => client.Chats.PostAsync(chatRequest, cancellationToken: cancellationToken)).ConfigureAwait(false);
             if (chat is null || string.IsNullOrWhiteSpace(chat.Id))
             {
                 _logger.LogError("Could not create/retrieve chat for lead: {BridgeLeadId}", bridgeLeadEntraId);
@@ -289,16 +298,95 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
 
     private async Task PostMessageAsync(string chatId, string message, CancellationToken cancellationToken)
     {
-        await _graph.Chats[chatId].Messages.PostAsync(
-            new ChatMessage
-            {
-                Body = new ItemBody
-                {
-                    ContentType = BodyType.Text,
-                    Content = message
-                }
-            },
-            cancellationToken: cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await ExecuteGraphWithReauthAsync(
+                client => client.Chats[chatId].Messages.PostAsync(
+                    new ChatMessage
+                    {
+                        Body = new ItemBody
+                        {
+                            ContentType = BodyType.Text,
+                            Content = message
+                        }
+                    },
+                    cancellationToken: cancellationToken)).ConfigureAwait(false);
+        }
+        catch (ODataError ex) when (string.Equals(ex.Error?.Code, "Unauthorized", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogError(
+                "Graph chat message post unauthorized for chatId={ChatId}. Code={Code}, Message={Message}",
+                chatId,
+                ex.Error?.Code,
+                ex.Error?.Message);
+            throw;
+        }
+        catch (ODataError ex) when (string.Equals(ex.Error?.Code, "Forbidden", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogError(
+                "Graph chat message post forbidden for chatId={ChatId}. Code={Code}, Message={Message}",
+                chatId,
+                ex.Error?.Code,
+                ex.Error?.Message);
+            throw;
+        }
+        catch (ODataError ex) when (string.Equals(ex.Error?.Code, "NotFound", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogError(
+                "Graph chat/message target not found for chatId={ChatId}. Code={Code}, Message={Message}",
+                chatId,
+                ex.Error?.Code,
+                ex.Error?.Message);
+            throw;
+        }
+        catch (ODataError ex)
+        {
+            _logger.LogError(
+                "Graph chat message post failed for chatId={ChatId}. Code={Code}, Message={Message}",
+                chatId,
+                ex.Error?.Code,
+                ex.Error?.Message);
+            throw;
+        }
+    }
+
+    private GraphServiceClient CreateGraphClient()
+    {
+        return new GraphServiceClient(_credential, GraphScopes);
+    }
+
+    private async Task EnsureGraphClientAuthenticatedAsync(CancellationToken cancellationToken)
+    {
+        var token = await _credential.GetTokenAsync(new TokenRequestContext(GraphScopes), cancellationToken).ConfigureAwait(false);
+        if (token.ExpiresOn <= DateTimeOffset.UtcNow.AddMinutes(2))
+        {
+            _graph = CreateGraphClient();
+            _logger.LogInformation("Graph client re-created because cached token is near expiry.");
+        }
+    }
+
+    private async Task<T> ExecuteGraphWithReauthAsync<T>(Func<GraphServiceClient, Task<T>> operation)
+    {
+        try
+        {
+            return await operation(_graph).ConfigureAwait(false);
+        }
+        catch (ODataError ex) when (IsAuthTokenFailure(ex))
+        {
+            _graph = CreateGraphClient();
+            _logger.LogWarning("Graph auth token failure detected; re-created Graph client and retrying once.");
+            return await operation(_graph).ConfigureAwait(false);
+        }
+    }
+
+    private static bool IsAuthTokenFailure(ODataError ex)
+    {
+        var code = ex.Error?.Code ?? string.Empty;
+        var message = ex.Error?.Message ?? string.Empty;
+        return code.Contains("InvalidAuthenticationToken", StringComparison.OrdinalIgnoreCase) ||
+               code.Contains("AuthenticationFailed", StringComparison.OrdinalIgnoreCase) ||
+               code.Contains("Unauthorized", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("expired", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? ReadString(IDictionary<string, AttributeValue> item, string key)
