@@ -164,7 +164,8 @@ public static class Program
             var callback = new Uri(botSettings.ServiceBaseUrl.Trim(), UriKind.Absolute);
             var messagingBase = $"{callback.Scheme}://{callback.Authority}";
             app.Logger.LogInformation(
-                "Teams Bot Framework: set Azure Bot messaging endpoint to {MessagingUrl} (same host as CallbackUrl).",
+                "Teams Bot Framework: set Azure Bot messaging endpoint to {MessagingUrl} (same host as CallbackUrl). " +
+                "Reverse proxy must forward POST /api/messages to this app. Conversation refs persist to ContentRoot/bridge_lead_conversations.json",
                 $"{messagingBase}/api/messages");
         }
         catch (Exception ex)
@@ -230,10 +231,21 @@ public static class Program
         app.MapPost("/callback", (HttpContext ctx, BotService botService, ILogger<BotService> log) =>
             HandleGraphCallback(ctx, botService, log));
 
-        app.MapPost("/api/messages", async (HttpContext ctx, CloudAdapter adapter, IBot bot, CancellationToken ct) =>
+        app.MapPost("/api/messages", async (HttpContext ctx, CloudAdapter adapter, IBot bot, ILoggerFactory loggerFactory, CancellationToken ct) =>
         {
+            loggerFactory.CreateLogger("BotMessages").LogInformation(
+                "Incoming POST /api/messages ContentLength={Len} UserAgent={Agent}",
+                ctx.Request.ContentLength ?? 0,
+                ctx.Request.Headers.UserAgent.ToString());
             await adapter.ProcessAsync(ctx.Request, ctx.Response, bot, ct).ConfigureAwait(false);
         });
+
+        app.MapGet("/api/bridge-lead/diag", (TeamsConversationReferenceStore store) =>
+            Results.Ok(new
+            {
+                storedConversationReferences = store.Count,
+                note = "If storedConversationReferences is 0, Teams is not hitting /api/messages or no user activity has been captured yet."
+            }));
 
         static async Task<IResult> HandleMeetingsApiJoin(
             HttpContext ctx,

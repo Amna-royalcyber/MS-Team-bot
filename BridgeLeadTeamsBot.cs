@@ -18,16 +18,42 @@ public sealed class BridgeLeadTeamsBot : ActivityHandler
         _logger = logger;
     }
 
-    protected override async Task OnMessageActivityAsync(ITurnContext<IMessageActivity> turnContext, CancellationToken cancellationToken)
+    public override async Task OnTurnAsync(ITurnContext turnContext, CancellationToken cancellationToken)
     {
-        var oid = turnContext.Activity.From?.AadObjectId;
-        if (!string.IsNullOrWhiteSpace(oid))
+        TryCaptureConversationReference(turnContext);
+        await base.OnTurnAsync(turnContext, cancellationToken).ConfigureAwait(false);
+    }
+
+    private void TryCaptureConversationReference(ITurnContext turnContext)
+    {
+        var activity = turnContext.Activity;
+        if (activity?.Conversation is null)
         {
-            var reference = turnContext.Activity.GetConversationReference();
-            _references.Upsert(oid, reference);
-            _logger.LogInformation("Stored Teams conversation reference for Entra user {Oid}.", oid);
+            return;
         }
 
+        var oid = activity.From?.AadObjectId;
+        if (string.IsNullOrWhiteSpace(oid))
+        {
+            return;
+        }
+
+        if (string.Equals(activity.From?.Id, activity.Recipient?.Id, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var reference = activity.GetConversationReference();
+        _references.Upsert(oid.Trim(), reference);
+        _logger.LogInformation(
+            "Captured Teams conversation reference from activity Type={Type} ChannelId={ChannelId} for Entra user {Oid}.",
+            activity.Type,
+            activity.ChannelId,
+            oid);
+    }
+
+    protected override async Task OnMessageActivityAsync(ITurnContext<IMessageActivity> turnContext, CancellationToken cancellationToken)
+    {
         await turnContext.SendActivityAsync(
             MessageFactory.Text("You're connected for bridge-lead alerts. You can close this chat; Dynamo updates will appear here when available."),
             cancellationToken).ConfigureAwait(false);
@@ -37,14 +63,6 @@ public sealed class BridgeLeadTeamsBot : ActivityHandler
         ITurnContext<IInstallationUpdateActivity> turnContext,
         CancellationToken cancellationToken)
     {
-        var oid = turnContext.Activity.From?.AadObjectId;
-        if (!string.IsNullOrWhiteSpace(oid))
-        {
-            var reference = turnContext.Activity.GetConversationReference();
-            _references.Upsert(oid, reference);
-            _logger.LogInformation("Stored Teams conversation reference from app installation for Entra user {Oid}.", oid);
-        }
-
         await turnContext.SendActivityAsync(
             MessageFactory.Text("Teams Meeting Transcription is installed. Bridge-lead alerts will appear in this chat when DynamoDB posts updates."),
             cancellationToken).ConfigureAwait(false);
@@ -56,22 +74,7 @@ public sealed class BridgeLeadTeamsBot : ActivityHandler
         ITurnContext<IConversationUpdateActivity> turnContext,
         CancellationToken cancellationToken)
     {
-        foreach (var member in membersAdded)
-        {
-            if (member.Id == turnContext.Activity.Recipient?.Id)
-            {
-                continue;
-            }
-
-            var oid = member.AadObjectId;
-            if (!string.IsNullOrWhiteSpace(oid))
-            {
-                var reference = turnContext.Activity.GetConversationReference();
-                _references.Upsert(oid, reference);
-                _logger.LogInformation("Stored Teams conversation reference from membersAdded for Entra user {Oid}.", oid);
-            }
-        }
-
+        _ = membersAdded;
         await base.OnMembersAddedAsync(membersAdded, turnContext, cancellationToken).ConfigureAwait(false);
     }
 }
