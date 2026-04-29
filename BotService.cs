@@ -89,6 +89,12 @@ public sealed class BotSettings
 
     /// <summary>Teams app catalog id used to proactively install the app for recipients before notifications.</summary>
     public string? TeamsAppId { get; init; }
+
+    /// <summary>
+    /// Teams manifest <c>id</c> (same as Graph <c>externalId</c> on catalog app). Used for activity notification <c>topic.webUrl</c>
+    /// deep link <c>https://teams.microsoft.com/l/app/{id}</c> so the user can open the bot from the notification.
+    /// </summary>
+    public string? TeamsManifestAppId { get; init; }
 }
 
 public sealed class BotService

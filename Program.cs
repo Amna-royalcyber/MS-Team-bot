@@ -73,6 +73,7 @@ public static class Program
                 600),
             BotDmSenderUserObjectId = ReadOptional(builder.Configuration, "BOT_DM_SENDER_USER_ID", "Bot:BotDmSenderUserObjectId"),
             TeamsAppId = ReadOptional(builder.Configuration, "BOT_TEAMS_APP_ID", "Bot:TeamsAppId"),
+            TeamsManifestAppId = ReadOptional(builder.Configuration, "BOT_TEAMS_MANIFEST_APP_ID", "Bot:TeamsManifestAppId"),
             IdentityAudioBufferMilliseconds = Math.Clamp(
                 ReadInt(builder.Configuration, "BOT_IDENTITY_AUDIO_BUFFER_MS", "Bot:IdentityAudioBufferMilliseconds", 7000),
                 5000,

@@ -341,12 +341,13 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
         try
         {
             var token = await _credential.GetTokenAsync(new TokenRequestContext(GraphScopes), cancellationToken).ConfigureAwait(false);
+            var webUrl = GetActivityNotificationWebUrl();
             // Try a few template parameter shapes to tolerate manifest drift while app package versions propagate.
             var payloads = new object[]
             {
-                BuildActivityPayload(message, includeActorAndContent: true, includeContentOnly: false),
-                BuildActivityPayload(message, includeActorAndContent: false, includeContentOnly: true),
-                BuildActivityPayload(message, includeActorAndContent: false, includeContentOnly: false)
+                BuildActivityPayload(message, webUrl, includeActorAndContent: true, includeContentOnly: false),
+                BuildActivityPayload(message, webUrl, includeActorAndContent: false, includeContentOnly: true),
+                BuildActivityPayload(message, webUrl, includeActorAndContent: false, includeContentOnly: false)
             };
 
             for (var i = 0; i < payloads.Length; i++)
@@ -402,7 +403,19 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
         }
     }
 
-    private static object BuildActivityPayload(string message, bool includeActorAndContent, bool includeContentOnly)
+    private string GetActivityNotificationWebUrl()
+    {
+        if (!string.IsNullOrWhiteSpace(_settings.TeamsManifestAppId))
+        {
+            return $"https://teams.microsoft.com/l/app/{_settings.TeamsManifestAppId.Trim()}";
+        }
+
+        _logger.LogWarning(
+            "Bot:TeamsManifestAppId is not set. Activity notification topic.webUrl will use Bot ClientId; set TeamsManifestAppId to your manifest id for reliable open links.");
+        return $"https://teams.microsoft.com/l/app/{_settings.ClientId.Trim()}";
+    }
+
+    private static object BuildActivityPayload(string message, string webUrl, bool includeActorAndContent, bool includeContentOnly)
     {
         object[] templateParameters = Array.Empty<object>();
         if (includeActorAndContent)
@@ -427,7 +440,7 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
             {
                 source = "text",
                 value = "Bridge Lead Update",
-                webUrl = "https://teams.microsoft.com/l/chat/0/0"
+                webUrl
             },
             activityType = "taskCreated",
             previewText = new
