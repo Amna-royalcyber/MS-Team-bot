@@ -234,36 +234,30 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                     bridgeLeadEntraId);
             }
 
-            var botMemberId = _settings.BotDmSenderUserObjectId?.Trim();
-            if (string.IsNullOrWhiteSpace(botMemberId))
+            var initiatorUserObjectId = _settings.BotDmSenderUserObjectId?.Trim();
+            if (string.IsNullOrWhiteSpace(initiatorUserObjectId))
             {
                 _logger.LogWarning(
                     "BotDmSenderUserObjectId is not configured. Cannot initiate Graph one-on-one chat DM flow.");
                 return false;
             }
+            if (string.Equals(initiatorUserObjectId, bridgeLeadEntraId, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning(
+                    "BotDmSenderUserObjectId and bridgeLeadEntraId are the same ({Id}). One-on-one chat creation requires two distinct users.",
+                    bridgeLeadEntraId);
+                return false;
+            }
 
-            // 1. Define the 1:1 Chat thread between the Bot and the User
+            // Proactive bot pattern with Graph app-only: create chat between two Entra users
+            // (initiator service account + bridge lead). Do not use app/client id as a chat member.
             var chatRequest = new Chat
             {
                 ChatType = ChatType.OneOnOne,
                 Members = new List<ConversationMember>
                 {
-                    new AadUserConversationMember
-                    {
-                        Roles = new List<string> { "owner" },
-                        AdditionalData = new Dictionary<string, object>
-                        {
-                            ["user@odata.bind"] = $"https://graph.microsoft.com/v1.0/users('{bridgeLeadEntraId}')"
-                        }
-                    },
-                    new AadUserConversationMember
-                    {
-                        Roles = new List<string> { "owner" },
-                        AdditionalData = new Dictionary<string, object>
-                        {
-                            ["user@odata.bind"] = $"https://graph.microsoft.com/v1.0/users('{botMemberId}')"
-                        }
-                    }
+                    BuildUserConversationMember(initiatorUserObjectId),
+                    BuildUserConversationMember(bridgeLeadEntraId)
                 }
             };
 
@@ -298,8 +292,14 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
 
     private async Task PostMessageAsync(string chatId, string message, CancellationToken cancellationToken)
     {
+        if (string.IsNullOrWhiteSpace(chatId))
+        {
+            throw new InvalidOperationException("Cannot post message because chatId is empty.");
+        }
+
         try
         {
+            // Uses Graph /chats/{chat-id}/messages endpoint for bot-created chat.
             await ExecuteGraphWithReauthAsync(
                 client => client.Chats[chatId].Messages.PostAsync(
                     new ChatMessage
@@ -348,6 +348,18 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                 ex.Error?.Message);
             throw;
         }
+    }
+
+    private static AadUserConversationMember BuildUserConversationMember(string userObjectId)
+    {
+        return new AadUserConversationMember
+        {
+            Roles = new List<string> { "owner" },
+            AdditionalData = new Dictionary<string, object>
+            {
+                ["user@odata.bind"] = $"https://graph.microsoft.com/v1.0/users('{userObjectId}')"
+            }
+        };
     }
 
     private GraphServiceClient CreateGraphClient()
