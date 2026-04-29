@@ -403,16 +403,35 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
         }
     }
 
+    /// <summary>
+    /// Deep link opened when the user taps the activity notification. Teams resolves org apps most reliably
+    /// using the <b>catalog</b> app id (Graph <c>appCatalogs/teamsApps</c> <c>id</c>), not always the manifest <c>id</c>.
+    /// </summary>
     private string GetActivityNotificationWebUrl()
     {
-        if (!string.IsNullOrWhiteSpace(_settings.TeamsManifestAppId))
+        string appSegment;
+        if (!string.IsNullOrWhiteSpace(_settings.TeamsAppId))
         {
-            return $"https://teams.microsoft.com/l/app/{_settings.TeamsManifestAppId.Trim()}";
+            appSegment = _settings.TeamsAppId.Trim();
+        }
+        else if (!string.IsNullOrWhiteSpace(_settings.TeamsManifestAppId))
+        {
+            appSegment = _settings.TeamsManifestAppId.Trim();
+        }
+        else
+        {
+            _logger.LogWarning(
+                "Neither TeamsAppId nor TeamsManifestAppId is set; using Azure AD ClientId for l/app deep link.");
+            appSegment = _settings.ClientId.Trim();
         }
 
-        _logger.LogWarning(
-            "Bot:TeamsManifestAppId is not set. Activity notification topic.webUrl will use Bot ClientId; set TeamsManifestAppId to your manifest id for reliable open links.");
-        return $"https://teams.microsoft.com/l/app/{_settings.ClientId.Trim()}";
+        var url = $"https://teams.microsoft.com/l/app/{appSegment}";
+        if (!string.IsNullOrWhiteSpace(_settings.TenantId))
+        {
+            url += $"?tenantId={Uri.EscapeDataString(_settings.TenantId.Trim())}";
+        }
+
+        return url;
     }
 
     private static object BuildActivityPayload(string message, string webUrl, bool includeActorAndContent, bool includeContentOnly)
