@@ -29,11 +29,16 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
     private readonly HttpClient _http = new();
     private readonly ConcurrentDictionary<string, byte> _sentKeys = new(StringComparer.OrdinalIgnoreCase);
     private static readonly string[] GraphScopes = { "https://graph.microsoft.com/.default" };
+    private readonly TeamsProactiveMessagingService _teamsProactive;
 
-    public BridgeLeadDynamoDmService(BotSettings settings, ILogger<BridgeLeadDynamoDmService> logger)
+    public BridgeLeadDynamoDmService(
+        BotSettings settings,
+        ILogger<BridgeLeadDynamoDmService> logger,
+        TeamsProactiveMessagingService teamsProactive)
     {
         _settings = settings;
         _logger = logger;
+        _teamsProactive = teamsProactive;
 
         if (!string.IsNullOrWhiteSpace(_settings.DynamoRegion))
         {
@@ -100,6 +105,15 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                 // Preferred bot path: Teams activity notification (works without separate sender user id).
                 if (string.IsNullOrWhiteSpace(_settings.BotDmSenderUserObjectId))
                 {
+                    if (await _teamsProactive.TrySendPersonalChatAsync(bridgeLeadId.Trim(), generatedResponse.Trim(), cancellationToken).ConfigureAwait(false))
+                    {
+                        _logger.LogInformation(
+                            "Bridge-lead proactive Teams chat sent from Dynamo record: meetingId={MeetingId}, bridgeLeadId={BridgeLeadId}.",
+                            meetingId,
+                            bridgeLeadId);
+                        continue;
+                    }
+
                     var sent = await SendFallbackActivityNotificationAsync(bridgeLeadId.Trim(), generatedResponse.Trim(), cancellationToken)
                         .ConfigureAwait(false);
                     if (!sent)
@@ -232,6 +246,12 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                 _logger.LogWarning(
                     "TeamsAppId is not configured. Skipping proactive app installation for user {Id}; fallback activity notifications may fail with 403.",
                     bridgeLeadEntraId);
+            }
+
+            if (await _teamsProactive.TrySendPersonalChatAsync(bridgeLeadEntraId, message, cancellationToken).ConfigureAwait(false))
+            {
+                _logger.LogInformation("Successfully sent proactive Teams chat to Bridge Lead {Id}", bridgeLeadEntraId);
+                return true;
             }
 
             // App-only proactive pattern: use activity notification as primary delivery mechanism.

@@ -3,6 +3,9 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.Bot.Builder;
+using Microsoft.Bot.Builder.BotFramework;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -104,9 +107,41 @@ public static class Program
         builder.Services.AddSingleton<MediaHandler>();
         builder.Services.AddSingleton<CallHandler>();
         builder.Services.AddSingleton<BotService>();
+        builder.Services.AddSingleton<TeamsConversationReferenceStore>();
+        builder.Services.AddSingleton<CloudAdapter>(sp =>
+        {
+            var settings = sp.GetRequiredService<BotSettings>();
+            var inMemory = new Dictionary<string, string?>
+            {
+                ["MicrosoftAppId"] = settings.ClientId,
+                ["MicrosoftAppPassword"] = settings.ClientSecret,
+                ["MicrosoftAppType"] = "SingleTenant",
+                ["MicrosoftAppTenantId"] = settings.TenantId
+            };
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(inMemory!).Build();
+            var authentication = new ConfigurationBotFrameworkAuthentication(configuration);
+            return new CloudAdapter(authentication);
+        });
+        builder.Services.AddSingleton<BridgeLeadTeamsBot>();
+        builder.Services.AddSingleton<IBot>(sp => sp.GetRequiredService<BridgeLeadTeamsBot>());
+        builder.Services.AddSingleton<TeamsProactiveMessagingService>();
         builder.Services.AddHostedService<BridgeLeadDynamoDmService>();
 
         var app = builder.Build();
+
+        var botSettings = app.Services.GetRequiredService<BotSettings>();
+        try
+        {
+            var callback = new Uri(botSettings.ServiceBaseUrl.Trim(), UriKind.Absolute);
+            var messagingBase = $"{callback.Scheme}://{callback.Authority}";
+            app.Logger.LogInformation(
+                "Teams Bot Framework: set Azure Bot messaging endpoint to {MessagingUrl} (same host as CallbackUrl).",
+                $"{messagingBase}/api/messages");
+        }
+        catch (Exception ex)
+        {
+            app.Logger.LogWarning(ex, "Could not derive messaging URL from Bot:CallbackUrl.");
+        }
 
         // Must run first so SignalR and HTTPS URLs see correct scheme/host behind nginx.
         app.UseForwardedHeaders();
@@ -165,6 +200,11 @@ public static class Program
 
         app.MapPost("/callback", (HttpContext ctx, BotService botService, ILogger<BotService> log) =>
             HandleGraphCallback(ctx, botService, log));
+
+        app.MapPost("/api/messages", async (HttpContext ctx, CloudAdapter adapter, IBot bot, CancellationToken ct) =>
+        {
+            await adapter.ProcessAsync(ctx.Request, ctx.Response, bot, ct).ConfigureAwait(false);
+        });
 
         static async Task<IResult> HandleMeetingsApiJoin(
             HttpContext ctx,
