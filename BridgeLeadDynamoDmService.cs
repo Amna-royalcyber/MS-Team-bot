@@ -425,10 +425,17 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                         client => client.Users[bridgeLeadEntraId].Teamwork.InstalledApps.PostAsync(
                             userAppInstallation,
                             cancellationToken: cancellationToken)).ConfigureAwait(false);
+                    _logger.LogInformation(
+                        "Install-then-chat app install succeeded for bridgeLeadId={BridgeLeadId}, teamsAppId={TeamsAppId}.",
+                        bridgeLeadEntraId,
+                        _settings.TeamsAppId);
                 }
                 catch (ODataError ex) when (string.Equals(ex.Error?.Code, "Conflict", StringComparison.OrdinalIgnoreCase))
                 {
-                    // already installed
+                    _logger.LogInformation(
+                        "Install-then-chat app already installed for bridgeLeadId={BridgeLeadId}, teamsAppId={TeamsAppId}.",
+                        bridgeLeadEntraId,
+                        _settings.TeamsAppId);
                 }
                 catch (ODataError ex)
                 {
@@ -455,10 +462,12 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
 
             if (chat is null || string.IsNullOrWhiteSpace(chat.Id))
             {
+                _logger.LogWarning("Install-then-chat could not resolve chatId for bridgeLeadId={BridgeLeadId}.", bridgeLeadEntraId);
                 return false;
             }
+            _logger.LogInformation("Install-then-chat resolved chatId={ChatId} for bridgeLeadId={BridgeLeadId}.", chat.Id, bridgeLeadEntraId);
 
-            await ExecuteGraphWithReauthAsync(
+            var posted = await ExecuteGraphWithReauthAsync(
                 client => client.Chats[chat.Id].Messages.PostAsync(
                     new ChatMessage
                     {
@@ -469,6 +478,11 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                         }
                     },
                     cancellationToken: cancellationToken)).ConfigureAwait(false);
+            _logger.LogInformation(
+                "Install-then-chat posted messageId={MessageId} to chatId={ChatId} for bridgeLeadId={BridgeLeadId}.",
+                posted?.Id ?? "n/a",
+                chat.Id,
+                bridgeLeadEntraId);
             return true;
         }
         catch (ODataError ex)
