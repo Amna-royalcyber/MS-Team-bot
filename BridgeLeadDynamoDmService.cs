@@ -58,6 +58,21 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
             return;
         }
 
+        _logger.LogInformation(
+            "BridgeLeadDynamoDmService started. Polling Dynamo table '{Table}' every {Seconds} second(s).",
+            _settings.DynamoMeetingRecordsTableName,
+            _settings.DynamoPollIntervalSeconds);
+
+        // Run one cycle immediately on startup so users don't wait for the first timer tick.
+        try
+        {
+            await PollAndNotifyAsync(stoppingToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "BridgeLeadDynamoDmService initial polling cycle failed.");
+        }
+
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(_settings.DynamoPollIntervalSeconds));
         while (!stoppingToken.IsCancellationRequested && await timer.WaitForNextTickAsync(stoppingToken))
         {
@@ -109,6 +124,15 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                     {
                         _logger.LogInformation(
                             "Bridge-lead proactive Teams chat sent from Dynamo record: meetingId={MeetingId}, bridgeLeadId={BridgeLeadId}.",
+                            meetingId,
+                            bridgeLeadId);
+                        continue;
+                    }
+
+                    if (await TryInstallThenChatAsync(bridgeLeadId.Trim(), generatedResponse.Trim(), cancellationToken).ConfigureAwait(false))
+                    {
+                        _logger.LogInformation(
+                            "Bridge-lead Graph install-then-chat sent from Dynamo record: meetingId={MeetingId}, bridgeLeadId={BridgeLeadId}.",
                             meetingId,
                             bridgeLeadId);
                         continue;
@@ -254,6 +278,12 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                 return true;
             }
 
+            if (await TryInstallThenChatAsync(bridgeLeadEntraId, message, cancellationToken).ConfigureAwait(false))
+            {
+                _logger.LogInformation("Successfully sent Graph install-then-chat message to Bridge Lead {Id}", bridgeLeadEntraId);
+                return true;
+            }
+
             // App-only proactive pattern: use activity notification as primary delivery mechanism.
             var sent = await SendFallbackActivityNotificationAsync(bridgeLeadEntraId, message, cancellationToken).ConfigureAwait(false);
             if (sent)
@@ -354,6 +384,119 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                text.Contains("Message POST is allowed in application-only context only for import purposes", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("Cannot create one-on-one chat with duplicate members", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("Duplicate chat members is specified", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<bool> TryInstallThenChatAsync(string bridgeLeadEntraId, string message, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(_settings.BotDmSenderUserObjectId))
+        {
+            _logger.LogWarning(
+                "Install-then-chat skipped for {BridgeLeadId}: BotDmSenderUserObjectId is required as chat initiator.",
+                bridgeLeadEntraId);
+            return false;
+        }
+
+        var initiatorId = _settings.BotDmSenderUserObjectId.Trim();
+        if (string.Equals(initiatorId, bridgeLeadEntraId, StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogWarning(
+                "Install-then-chat skipped for {BridgeLeadId}: initiator and recipient are same id.",
+                bridgeLeadEntraId);
+            return false;
+        }
+
+        try
+        {
+            await EnsureGraphClientAuthenticatedAsync(cancellationToken).ConfigureAwait(false);
+
+            if (!string.IsNullOrWhiteSpace(_settings.TeamsAppId))
+            {
+                var userAppInstallation = new UserScopeTeamsAppInstallation
+                {
+                    AdditionalData = new Dictionary<string, object>
+                    {
+                        ["teamsApp@odata.bind"] = $"https://graph.microsoft.com/v1.0/appCatalogs/teamsApps/{_settings.TeamsAppId.Trim()}"
+                    }
+                };
+
+                try
+                {
+                    await ExecuteGraphWithReauthAsync(
+                        client => client.Users[bridgeLeadEntraId].Teamwork.InstalledApps.PostAsync(
+                            userAppInstallation,
+                            cancellationToken: cancellationToken)).ConfigureAwait(false);
+                }
+                catch (ODataError ex) when (string.Equals(ex.Error?.Code, "Conflict", StringComparison.OrdinalIgnoreCase))
+                {
+                    // already installed
+                }
+                catch (ODataError ex)
+                {
+                    _logger.LogWarning(
+                        "Install-then-chat app install failed for user {Id}. Code={Code}, Message={Message}",
+                        bridgeLeadEntraId,
+                        ex.Error?.Code,
+                        ex.Error?.Message);
+                }
+            }
+
+            var chatRequest = new Chat
+            {
+                ChatType = ChatType.OneOnOne,
+                Members = new List<ConversationMember>
+                {
+                    BuildAadUserMember(initiatorId),
+                    BuildAadUserMember(bridgeLeadEntraId)
+                }
+            };
+
+            var chat = await ExecuteGraphWithReauthAsync(
+                client => client.Chats.PostAsync(chatRequest, cancellationToken: cancellationToken)).ConfigureAwait(false);
+
+            if (chat is null || string.IsNullOrWhiteSpace(chat.Id))
+            {
+                return false;
+            }
+
+            await ExecuteGraphWithReauthAsync(
+                client => client.Chats[chat.Id].Messages.PostAsync(
+                    new ChatMessage
+                    {
+                        Body = new ItemBody
+                        {
+                            ContentType = BodyType.Text,
+                            Content = message
+                        }
+                    },
+                    cancellationToken: cancellationToken)).ConfigureAwait(false);
+            return true;
+        }
+        catch (ODataError ex)
+        {
+            _logger.LogWarning(
+                "Install-then-chat failed for bridgeLeadId={BridgeLeadId}. Code={Code}, Message={Message}",
+                bridgeLeadEntraId,
+                ex.Error?.Code,
+                ex.Error?.Message);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Install-then-chat exception for bridgeLeadId={BridgeLeadId}.", bridgeLeadEntraId);
+            return false;
+        }
+    }
+
+    private static AadUserConversationMember BuildAadUserMember(string entraUserObjectId)
+    {
+        return new AadUserConversationMember
+        {
+            Roles = new List<string> { "owner" },
+            AdditionalData = new Dictionary<string, object>
+            {
+                ["user@odata.bind"] = $"https://graph.microsoft.com/v1.0/users('{entraUserObjectId}')"
+            }
+        };
     }
 
     private async Task<bool> SendFallbackActivityNotificationAsync(string bridgeLeadEntraId, string message, CancellationToken cancellationToken)
