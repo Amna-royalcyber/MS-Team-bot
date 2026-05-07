@@ -21,6 +21,9 @@ namespace TeamsMediaBot;
 /// </summary>
 public sealed class BridgeLeadDynamoDmService : BackgroundService
 {
+    private const int ActivityTemplateContentMaxLength = 120;
+    private const int ActivityPreviewMaxLength = 80;
+
     private readonly BotSettings _settings;
     private readonly MeetingContextStore _meetingContext;
     private readonly ILogger<BridgeLeadDynamoDmService> _logger;
@@ -101,7 +104,23 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
             return;
         }
 
-        var items = await QueryByMeetingIdAsync(tableName, meetingIdKey, cancellationToken).ConfigureAwait(false);
+        List<Dictionary<string, AttributeValue>> items;
+        try
+        {
+            items = await QueryByMeetingIdAsync(tableName, meetingIdKey, cancellationToken).ConfigureAwait(false);
+        }
+        catch (AmazonDynamoDBException ex) when (
+            string.Equals(ex.ErrorCode, "ResourceNotFoundException", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(ex.ErrorCode, "ValidationException", StringComparison.OrdinalIgnoreCase))
+        {
+            // Treat "record/key not found" style responses as a soft miss to keep polling loop healthy.
+            _logger.LogInformation(
+                "Skipping Dynamo poll for meeting_id={MeetingId}. No matching record/key schema yet. Code={Code}",
+                meetingIdKey,
+                ex.ErrorCode);
+            return;
+        }
+
         if (items.Count == 0)
         {
             _logger.LogInformation("No Dynamo record found for meeting_id={MeetingId}.", meetingIdKey);
@@ -684,20 +703,24 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
 
     private static object BuildActivityPayload(string message, string webUrl, bool includeActorAndContent, bool includeContentOnly)
     {
+        var compact = CompactWhitespace(message);
+        var templateContent = TruncateForActivity(compact, ActivityTemplateContentMaxLength);
+        var previewContent = TruncateForActivity(compact, ActivityPreviewMaxLength);
+
         object[] templateParameters = Array.Empty<object>();
         if (includeActorAndContent)
         {
             templateParameters = new object[]
             {
                 new { name = "actor", value = "Teams Meeting Transcription Bot" },
-                new { name = "content", value = message }
+                new { name = "content", value = templateContent }
             };
         }
         else if (includeContentOnly)
         {
             templateParameters = new object[]
             {
-                new { name = "content", value = message }
+                new { name = "content", value = templateContent }
             };
         }
 
@@ -712,9 +735,34 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
             activityType = "taskCreated",
             previewText = new
             {
-                content = message
+                content = previewContent
             },
             templateParameters
         };
+    }
+
+    private static string CompactWhitespace(string? input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return "You have a new bridge-lead update.";
+        }
+
+        return string.Join(" ", input.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    private static string TruncateForActivity(string input, int maxLength)
+    {
+        if (string.IsNullOrEmpty(input) || input.Length <= maxLength)
+        {
+            return input;
+        }
+
+        if (maxLength <= 3)
+        {
+            return input[..maxLength];
+        }
+
+        return input[..(maxLength - 3)] + "...";
     }
 }
