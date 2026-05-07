@@ -22,6 +22,7 @@ namespace TeamsMediaBot;
 public sealed class BridgeLeadDynamoDmService : BackgroundService
 {
     private readonly BotSettings _settings;
+    private readonly MeetingContextStore _meetingContext;
     private readonly ILogger<BridgeLeadDynamoDmService> _logger;
     private readonly IAmazonDynamoDB? _dynamo;
     private GraphServiceClient _graph;
@@ -33,10 +34,12 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
 
     public BridgeLeadDynamoDmService(
         BotSettings settings,
+        MeetingContextStore meetingContext,
         ILogger<BridgeLeadDynamoDmService> logger,
         TeamsProactiveMessagingService teamsProactive)
     {
         _settings = settings;
+        _meetingContext = meetingContext;
         _logger = logger;
         _teamsProactive = teamsProactive;
 
@@ -90,12 +93,22 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
     private async Task PollAndNotifyAsync(CancellationToken cancellationToken)
     {
         var tableName = _settings.DynamoMeetingRecordsTableName!.Trim();
-        var response = await _dynamo!.ScanAsync(new ScanRequest
+        var meetingIdKey = _meetingContext.CurrentMeetingId?.Trim();
+        if (string.IsNullOrWhiteSpace(meetingIdKey) ||
+            string.Equals(meetingIdKey, "unknown", StringComparison.OrdinalIgnoreCase))
         {
-            TableName = tableName
-        }, cancellationToken).ConfigureAwait(false);
+            _logger.LogInformation("Skipping Dynamo poll: meeting context id is not set yet.");
+            return;
+        }
 
-        foreach (var item in response.Items)
+        var items = await QueryByMeetingIdAsync(tableName, meetingIdKey, cancellationToken).ConfigureAwait(false);
+        if (items.Count == 0)
+        {
+            _logger.LogInformation("No Dynamo record found for meeting_id={MeetingId}.", meetingIdKey);
+            return;
+        }
+
+        foreach (var item in items)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -211,6 +224,64 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                     meetingId,
                     bridgeLeadId);
             }
+        }
+    }
+
+    private async Task<List<Dictionary<string, AttributeValue>>> QueryByMeetingIdAsync(
+        string tableName,
+        string meetingIdKey,
+        CancellationToken cancellationToken)
+    {
+        var byString = await QueryByMeetingIdInternalAsync(
+            tableName,
+            meetingIdKey,
+            new AttributeValue { S = meetingIdKey },
+            cancellationToken).ConfigureAwait(false);
+        if (byString.Count > 0)
+        {
+            return byString;
+        }
+
+        if (!long.TryParse(meetingIdKey, out _))
+        {
+            return byString;
+        }
+
+        return await QueryByMeetingIdInternalAsync(
+            tableName,
+            meetingIdKey,
+            new AttributeValue { N = meetingIdKey },
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<List<Dictionary<string, AttributeValue>>> QueryByMeetingIdInternalAsync(
+        string tableName,
+        string meetingIdKey,
+        AttributeValue meetingKeyValue,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var response = await _dynamo!.QueryAsync(new QueryRequest
+            {
+                TableName = tableName,
+                KeyConditionExpression = "#pk = :meetingId",
+                ExpressionAttributeNames = new Dictionary<string, string>
+                {
+                    ["#pk"] = "meeting_id"
+                },
+                ExpressionAttributeValues = new Dictionary<string, AttributeValue>
+                {
+                    [":meetingId"] = meetingKeyValue
+                }
+            }, cancellationToken).ConfigureAwait(false);
+
+            return response.Items;
+        }
+        catch (AmazonDynamoDBException ex) when (string.Equals(ex.ErrorCode, "ValidationException", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogDebug(ex, "Dynamo partition key type mismatch for meeting_id={MeetingId}.", meetingIdKey);
+            return [];
         }
     }
 

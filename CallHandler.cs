@@ -227,7 +227,11 @@ public sealed class CallHandler
         _participantManager.BeginNewMeeting(call.Id);
         _meetingParticipants.AttachToCall(call, _settings.ClientId);
         _participantAudioRouter.AttachToCall(call, _settings.ClientId);
-        _meetingContext.SetMeetingId(call.Id);
+        if (string.IsNullOrWhiteSpace(_meetingContext.CurrentMeetingId) ||
+            string.Equals(_meetingContext.CurrentMeetingId, "unknown", StringComparison.OrdinalIgnoreCase))
+        {
+            _meetingContext.SetMeetingId(call.Id);
+        }
         lock (_activeCallLock)
         {
             _activeCall = call;

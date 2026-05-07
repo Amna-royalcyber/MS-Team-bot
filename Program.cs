@@ -80,6 +80,7 @@ public static class Program
             TeamsAppId = ReadOptional(builder.Configuration, "BOT_TEAMS_APP_ID", "Bot:TeamsAppId"),
             TeamsManifestAppId = ReadOptional(builder.Configuration, "BOT_TEAMS_MANIFEST_APP_ID", "Bot:TeamsManifestAppId"),
             MicrosoftAppType = ReadOptional(builder.Configuration, "BOT_MICROSOFT_APP_TYPE", "Bot:MicrosoftAppType") ?? "SingleTenant",
+            TeamsConnectorServiceUrl = ReadOptional(builder.Configuration, "BOT_TEAMS_CONNECTOR_SERVICE_URL", "Bot:TeamsConnectorServiceUrl"),
             IdentityAudioBufferMilliseconds = Math.Clamp(
                 ReadInt(builder.Configuration, "BOT_IDENTITY_AUDIO_BUFFER_MS", "Bot:IdentityAudioBufferMilliseconds", 7000),
                 5000,

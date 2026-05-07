@@ -98,6 +98,13 @@ public sealed class BotSettings
 
     /// <summary>Azure Bot registration type: <c>SingleTenant</c> or <c>MultiTenant</c>. Must match Azure Bot configuration.</summary>
     public string MicrosoftAppType { get; init; } = "SingleTenant";
+
+    /// <summary>
+    /// Teams Bot Connector <c>serviceUrl</c> for proactive <c>CreateConversationAsync</c> when no stored conversation exists.
+    /// Default in code is <c>https://smba.trafficmanager.net/teams/</c>. If proactive create fails, try a regional host
+    /// (for example <c>https://smba.trafficmanager.net/amer/</c>, <c>/emea/</c>, <c>/apac/</c>) to match your tenant geography.
+    /// </summary>
+    public string? TeamsConnectorServiceUrl { get; init; }
 }
 
 public sealed class BotService
@@ -105,6 +112,7 @@ public sealed class BotService
     private readonly BotSettings _settings;
     private readonly CallHandler _callHandler;
     private readonly MediaHandler _mediaHandler;
+    private readonly MeetingContextStore _meetingContext;
     private readonly ILogger<BotService> _logger;
     private readonly ILogger<ClientCredentialsAuthenticationProvider> _authLogger;
     private readonly IGraphLogger _graphLogger;
@@ -117,12 +125,14 @@ public sealed class BotService
         BotSettings settings,
         CallHandler callHandler,
         MediaHandler mediaHandler,
+        MeetingContextStore meetingContext,
         ILogger<ClientCredentialsAuthenticationProvider> authLogger,
         ILogger<BotService> logger)
     {
         _settings = settings;
         _callHandler = callHandler;
         _mediaHandler = mediaHandler;
+        _meetingContext = meetingContext;
         _authLogger = authLogger;
         _logger = logger;
         _graphLogger = new GraphLogger(_settings.ClientId);
@@ -143,6 +153,20 @@ public sealed class BotService
             if (_communicationsClient is null)
             {
                 throw new InvalidOperationException("Communications client is not initialized.");
+            }
+
+            var parsed = MeetingJoinParser.ParseJoinUrl(request.MeetingJoinUrl);
+            var transcriptMeetingId = !string.IsNullOrWhiteSpace(request.MeetingId)
+                ? request.MeetingId!.Trim()
+                : (!string.IsNullOrWhiteSpace(parsed.JoinMeetingId)
+                    ? parsed.JoinMeetingId!.Trim()
+                    : (!string.IsNullOrWhiteSpace(request.ChatThreadId)
+                        ? request.ChatThreadId!.Trim()
+                        : null));
+            if (!string.IsNullOrWhiteSpace(transcriptMeetingId))
+            {
+                _meetingContext.SetMeetingId(transcriptMeetingId);
+                _logger.LogInformation("Meeting context set from join request. MeetingId={MeetingId}", transcriptMeetingId);
             }
 
             _logger.LogInformation("Joining Teams meeting (Graph Communications).");
