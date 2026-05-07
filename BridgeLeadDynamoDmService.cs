@@ -22,7 +22,7 @@ namespace TeamsMediaBot;
 public sealed class BridgeLeadDynamoDmService : BackgroundService
 {
     private const int ActivityTemplateContentMaxLength = 120;
-    private const int ActivityPreviewMaxLength = 80;
+    private const string ActivityPreviewText = "New bridge-lead update available.";
 
     private readonly BotSettings _settings;
     private readonly MeetingContextStore _meetingContext;
@@ -705,7 +705,6 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
     {
         var compact = CompactWhitespace(message);
         var templateContent = TruncateForActivity(compact, ActivityTemplateContentMaxLength);
-        var previewContent = TruncateForActivity(compact, ActivityPreviewMaxLength);
 
         object[] templateParameters = Array.Empty<object>();
         if (includeActorAndContent)
@@ -735,7 +734,7 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
             activityType = "taskCreated",
             previewText = new
             {
-                content = previewContent
+                content = ActivityPreviewText
             },
             templateParameters
         };
