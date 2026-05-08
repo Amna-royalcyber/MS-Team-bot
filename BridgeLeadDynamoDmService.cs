@@ -133,7 +133,7 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
 
             var meetingId = ReadString(item, "meeting_id");
             var bridgeLeadId = ReadString(item, "bridge_lead_id");
-            var generatedResponse = ReadString(item, "generated_responce") ?? ReadString(item, "response_generated");
+            var generatedResponse = ReadString(item, "agent_response");
             if (string.IsNullOrWhiteSpace(meetingId) ||
                 string.IsNullOrWhiteSpace(bridgeLeadId) ||
                 string.IsNullOrWhiteSpace(generatedResponse))
