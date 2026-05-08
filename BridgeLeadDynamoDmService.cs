@@ -31,7 +31,7 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
     private GraphServiceClient _graph;
     private readonly ClientSecretCredential _credential;
     private readonly HttpClient _http = new();
-    private readonly ConcurrentDictionary<string, byte> _sentKeys = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, string> _lastSentAgentResponseHashByMeeting = new(StringComparer.OrdinalIgnoreCase);
     private static readonly string[] GraphScopes = { "https://graph.microsoft.com/.default" };
     private readonly TeamsProactiveMessagingService _teamsProactive;
 
@@ -141,11 +141,15 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                 continue;
             }
 
-            var dedupeKey = $"{meetingId}|{ComputeHash(generatedResponse)}";
-            if (!_sentKeys.TryAdd(dedupeKey, 0))
+            var responseHash = ComputeHash(generatedResponse);
+            var meetingKey = meetingId.Trim();
+            if (_lastSentAgentResponseHashByMeeting.TryGetValue(meetingKey, out var previousHash) &&
+                string.Equals(previousHash, responseHash, StringComparison.Ordinal))
             {
                 continue;
             }
+
+            _lastSentAgentResponseHashByMeeting[meetingKey] = responseHash;
 
             try
             {
@@ -199,7 +203,7 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                         continue;
                     }
 
-                    _sentKeys.TryRemove(dedupeKey, out _);
+                    RevertLastSentHashOnFailure(meetingKey, previousHash);
                     _logger.LogError(
                         "Bridge-lead DM failed and fallback activity notification failed: meetingId={MeetingId}, bridgeLeadId={BridgeLeadId}.",
                         meetingId,
@@ -236,7 +240,7 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
                     continue;
                 }
 
-                _sentKeys.TryRemove(dedupeKey, out _);
+                RevertLastSentHashOnFailure(meetingKey, previousHash);
                 _logger.LogError(
                     ex,
                     "Failed sending bridge-lead DM for meetingId={MeetingId}, bridgeLeadId={BridgeLeadId}.",
@@ -458,6 +462,17 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
         return Convert.ToHexString(bytes);
+    }
+
+    private void RevertLastSentHashOnFailure(string meetingKey, string? previousHash)
+    {
+        if (string.IsNullOrWhiteSpace(previousHash))
+        {
+            _lastSentAgentResponseHashByMeeting.TryRemove(meetingKey, out _);
+            return;
+        }
+
+        _lastSentAgentResponseHashByMeeting[meetingKey] = previousHash;
     }
 
     private static bool IsNonRetryableAppOnlyChatPostError(Exception ex)
