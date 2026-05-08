@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text;
 using System.Threading;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -324,9 +325,10 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
 
         var payload = new AlbChunkPayload
         {
-            MeetingId = _meetingContext.CurrentMeetingId,
+            MeetingId = NormalizeMeetingIdForAlb(_meetingContext.CurrentMeetingId),
             Transcript = transcriptList,
-            Flag = flag ?? ResolveAlbFlag(transcriptList.Count)
+            Flag = flag ?? ResolveAlbFlag(transcriptList.Count),
+            BridgeLeadId = _meetingContext.CurrentBridgeLeadId
         };
 
         try
@@ -379,6 +381,61 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
         return transcriptCount == 0 ? AlbFlagLongSilence : AlbFlagLengthLimitReached;
     }
 
+    private static string NormalizeMeetingIdForAlb(string? meetingId)
+    {
+        if (string.IsNullOrWhiteSpace(meetingId))
+        {
+            return "unknown";
+        }
+
+        var value = meetingId.Trim();
+        if (Guid.TryParse(value, out var g))
+        {
+            return g.ToString();
+        }
+
+        const string prefix = "19:meeting_";
+        const string suffix = "@thread.v2";
+        if (value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
+            value.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+        {
+            var encoded = value[prefix.Length..^suffix.Length];
+            if (!string.IsNullOrWhiteSpace(encoded))
+            {
+                var b64 = encoded.Replace('-', '+').Replace('_', '/');
+                var pad = b64.Length % 4;
+                if (pad != 0)
+                {
+                    b64 = b64.PadRight(b64.Length + (4 - pad), '=');
+                }
+
+                try
+                {
+                    var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(b64)).Trim();
+                    if (Guid.TryParse(decoded, out var decodedGuid))
+                    {
+                        return decodedGuid.ToString();
+                    }
+                }
+                catch
+                {
+                    // keep searching for any guid-looking token below
+                }
+            }
+        }
+
+        // Last fallback: extract the first GUID-looking token from the value.
+        foreach (var token in value.Split([':', '_', '@', '/', '\\', '?', '&', '='], StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (Guid.TryParse(token, out var extracted))
+            {
+                return extracted.ToString();
+            }
+        }
+
+        return value;
+    }
+
     private sealed class AlbChunkPayload
     {
         [JsonPropertyName("meeting_id")]
@@ -389,5 +446,8 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
 
         [JsonPropertyName("flag")]
         public string Flag { get; set; } = string.Empty;
+
+        [JsonPropertyName("bridge_lead_id")]
+        public string BridgeLeadId { get; set; } = string.Empty;
     }
 }

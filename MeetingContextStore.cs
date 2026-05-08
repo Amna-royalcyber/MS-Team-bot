@@ -4,6 +4,7 @@ public sealed class MeetingContextStore
 {
     private readonly object _lock = new();
     private string _meetingId = "unknown";
+    private string _bridgeLeadId = string.Empty;
     private DateTime? _callEstablishedUtc;
 
     public string CurrentMeetingId
@@ -13,6 +14,18 @@ public sealed class MeetingContextStore
             lock (_lock)
             {
                 return _meetingId;
+            }
+        }
+    }
+
+    /// <summary>Meeting organizer Entra object id used as bridge_lead_id in outbound payloads.</summary>
+    public string CurrentBridgeLeadId
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _bridgeLeadId;
             }
         }
     }
@@ -42,6 +55,19 @@ public sealed class MeetingContextStore
         }
     }
 
+    public void SetBridgeLeadId(string? bridgeLeadId)
+    {
+        if (string.IsNullOrWhiteSpace(bridgeLeadId))
+        {
+            return;
+        }
+
+        lock (_lock)
+        {
+            _bridgeLeadId = bridgeLeadId.Trim();
+        }
+    }
+
     public void SetCallEstablishedUtc(DateTime utc)
     {
         var normalized = utc.Kind == DateTimeKind.Utc ? utc : utc.ToUniversalTime();
@@ -56,6 +82,7 @@ public sealed class MeetingContextStore
         lock (_lock)
         {
             _meetingId = "unknown";
+            _bridgeLeadId = string.Empty;
             _callEstablishedUtc = null;
         }
     }

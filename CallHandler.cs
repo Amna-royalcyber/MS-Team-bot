@@ -227,6 +227,7 @@ public sealed class CallHandler
         _participantManager.BeginNewMeeting(call.Id);
         _meetingParticipants.AttachToCall(call, _settings.ClientId);
         _participantAudioRouter.AttachToCall(call, _settings.ClientId);
+        _meetingContext.SetBridgeLeadId(organizerObjectId);
         if (string.IsNullOrWhiteSpace(_meetingContext.CurrentMeetingId) ||
             string.Equals(_meetingContext.CurrentMeetingId, "unknown", StringComparison.OrdinalIgnoreCase))
         {
