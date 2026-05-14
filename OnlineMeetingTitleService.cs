@@ -44,14 +44,44 @@ public sealed class OnlineMeetingTitleService
                 _settings.ClientId.Trim(),
                 _settings.ClientSecret.Trim());
             var graph = new GraphServiceClient(credential, new[] { "https://graph.microsoft.com/.default" });
+            var organizerId = organizerObjectId.Trim();
+            var joinTrimmed = joinUrl.Trim();
 
-            var response = await graph.Users[organizerObjectId.Trim()].OnlineMeetings.GetAsync(
-                requestConfiguration =>
+            // This collection does not allow $top/$orderby; use $filter=joinWebUrl when possible, then list without query options.
+            OnlineMeetingCollectionResponse? response = null;
+            try
+            {
+                response = await graph.Users[organizerId].OnlineMeetings.GetAsync(
+                    cfg =>
+                    {
+                        cfg.QueryParameters.Filter = $"joinWebUrl eq '{ODataStringLiteral(joinTrimmed)}'";
+                    },
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(
+                    ex,
+                    "MEETING[UI] Graph onlineMeetings $filter joinWebUrl failed for organizer {OrganizerObjectId}.",
+                    organizerId);
+            }
+
+            if (response?.Value is null || response.Value.Count == 0)
+            {
+                try
                 {
-                    requestConfiguration.QueryParameters.Top = 200;
-                    requestConfiguration.QueryParameters.Orderby = new[] { "startDateTime desc" };
-                },
-                cancellationToken).ConfigureAwait(false);
+                    response = await graph.Users[organizerId].OnlineMeetings.GetAsync(
+                        cancellationToken: cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(
+                        ex,
+                        "MEETING[UI] Graph onlineMeetings unfiltered list failed for organizer {OrganizerObjectId}.",
+                        organizerId);
+                    response = null;
+                }
+            }
 
             if (response?.Value is null)
             {
@@ -119,14 +149,43 @@ public sealed class OnlineMeetingTitleService
                 _settings.ClientId.Trim(),
                 _settings.ClientSecret.Trim());
             var graph = new GraphServiceClient(credential, new[] { "https://graph.microsoft.com/.default" });
+            var organizerId = organizerObjectId.Trim();
 
-            var response = await graph.Users[organizerObjectId.Trim()].OnlineMeetings.GetAsync(
-                requestConfiguration =>
+            OnlineMeetingCollectionResponse? response = null;
+            try
+            {
+                response = await graph.Users[organizerId].OnlineMeetings.GetAsync(
+                    cfg =>
+                    {
+                        cfg.QueryParameters.Filter =
+                            $"joinMeetingIdSettings/joinMeetingId eq '{ODataStringLiteral(thread)}'";
+                    },
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(
+                    ex,
+                    "MEETING[UI] Graph onlineMeetings $filter joinMeetingId failed for organizer {OrganizerObjectId}.",
+                    organizerId);
+            }
+
+            if (response?.Value is null || response.Value.Count == 0)
+            {
+                try
                 {
-                    requestConfiguration.QueryParameters.Top = 200;
-                    requestConfiguration.QueryParameters.Orderby = new[] { "startDateTime desc" };
-                },
-                cancellationToken).ConfigureAwait(false);
+                    response = await graph.Users[organizerId].OnlineMeetings.GetAsync(
+                        cancellationToken: cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(
+                        ex,
+                        "MEETING[UI] Graph onlineMeetings unfiltered list failed for organizer {OrganizerObjectId} (thread match).",
+                        organizerId);
+                    response = null;
+                }
+            }
 
             if (response?.Value is null)
             {
@@ -174,6 +233,9 @@ public sealed class OnlineMeetingTitleService
 
         return null;
     }
+
+    private static string ODataStringLiteral(string value) =>
+        value.Replace("'", "''", StringComparison.Ordinal);
 
     private static bool JoinUrlContainsThread(string joinWebUrl, string threadId)
     {
