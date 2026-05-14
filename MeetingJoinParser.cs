@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -156,6 +157,132 @@ public static class MeetingJoinParser
         }
 
         return current;
+    }
+
+    /// <summary>
+    /// Stable meeting key for storage / UI correlation (decodes <c>19:meeting_…@thread.v2</c> embedded GUID when present).
+    /// </summary>
+    public static string NormalizeMeetingIdForStorage(string meetingId)
+    {
+        if (string.IsNullOrWhiteSpace(meetingId))
+        {
+            return meetingId;
+        }
+
+        var value = meetingId.Trim();
+        if (Guid.TryParse(value, out var parsedGuid))
+        {
+            return parsedGuid.ToString();
+        }
+
+        const string prefix = "19:meeting_";
+        const string suffix = "@thread.v2";
+        if (!value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
+            !value.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+        {
+            return value;
+        }
+
+        var encoded = value[prefix.Length..^suffix.Length];
+        if (string.IsNullOrWhiteSpace(encoded))
+        {
+            return value;
+        }
+
+        var base64 = encoded.Replace('-', '+').Replace('_', '/');
+        var pad = base64.Length % 4;
+        if (pad != 0)
+        {
+            base64 = base64.PadRight(base64.Length + (4 - pad), '=');
+        }
+
+        try
+        {
+            var bytes = Convert.FromBase64String(base64);
+            var decoded = Encoding.UTF8.GetString(bytes).Trim();
+            return Guid.TryParse(decoded, out var embeddedGuid) ? embeddedGuid.ToString() : value;
+        }
+        catch
+        {
+            return value;
+        }
+    }
+
+    /// <summary>
+    /// Substrings that may appear in Graph/user <c>joinWebUrl</c> for the same meeting (thread id, GUID, URL-encoded).
+    /// </summary>
+    public static IReadOnlyList<string> EnumerateMeetingJoinUrlMatchTokens(string? meetingThreadOrCorrelationId)
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void addCore(string? s)
+        {
+            if (string.IsNullOrWhiteSpace(s))
+            {
+                return;
+            }
+
+            var t = s.Trim();
+            set.Add(t);
+            set.Add(Uri.EscapeDataString(t));
+            set.Add(t.Replace(":", "%3A", StringComparison.OrdinalIgnoreCase));
+            set.Add(t.Replace("@", "%40", StringComparison.OrdinalIgnoreCase));
+        }
+
+        addCore(meetingThreadOrCorrelationId);
+        var v = meetingThreadOrCorrelationId?.Trim();
+        if (string.IsNullOrEmpty(v))
+        {
+            return set.Where(x => !string.IsNullOrEmpty(x)).ToList();
+        }
+
+        if (Guid.TryParse(v, out var g))
+        {
+            addCore(g.ToString("D"));
+            addCore(g.ToString("N"));
+            addCore(g.ToString("B"));
+        }
+
+        const string prefix = "19:meeting_";
+        const string suffix = "@thread.v2";
+        if (v.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
+            v.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+        {
+            var encoded = v[prefix.Length..^suffix.Length];
+            if (!string.IsNullOrWhiteSpace(encoded))
+            {
+                var base64 = encoded.Replace('-', '+').Replace('_', '/');
+                var pad = base64.Length % 4;
+                if (pad != 0)
+                {
+                    base64 = base64.PadRight(base64.Length + (4 - pad), '=');
+                }
+
+                try
+                {
+                    var bytes = Convert.FromBase64String(base64);
+                    var decoded = Encoding.UTF8.GetString(bytes).Trim();
+                    if (Guid.TryParse(decoded, out var embedded))
+                    {
+                        addCore(embedded.ToString("D"));
+                        addCore(embedded.ToString("N"));
+                        addCore(embedded.ToString("B"));
+                    }
+                }
+                catch
+                {
+                    // ignore
+                }
+            }
+        }
+
+        var stable = NormalizeMeetingIdForStorage(v);
+        if (!string.Equals(stable, v, StringComparison.Ordinal))
+        {
+            addCore(stable);
+        }
+
+        return set.Where(x => !string.IsNullOrEmpty(x)).ToList();
     }
 }
 

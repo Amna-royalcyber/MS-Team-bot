@@ -90,12 +90,14 @@
     connection.on("meeting-title", (payload) => {
       const t = pick(payload, "title", "Title");
       const mid = pick(payload, "meetingId", "MeetingId");
-      if (t != null && String(t).trim() !== "") {
+      const hasTitle = t != null && String(t).trim() !== "";
+      if (hasTitle) {
         meetingHeaderTitleEl.textContent = String(t).trim();
       } else {
         meetingHeaderTitleEl.textContent = "Live transcription";
       }
-      if (mid != null && String(mid).trim() !== "" && String(mid).toLowerCase() !== "unknown") {
+      // Show correlation id only when a human title is present so the bar is not mistaken for the meeting name.
+      if (hasTitle && mid != null && String(mid).trim() !== "" && String(mid).toLowerCase() !== "unknown") {
         meetingHeaderIdEl.textContent = "Meeting ID: " + String(mid).trim();
         meetingHeaderIdEl.hidden = false;
       } else {

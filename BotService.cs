@@ -172,7 +172,7 @@ public sealed class BotService
                         : null));
             if (!string.IsNullOrWhiteSpace(transcriptMeetingId))
             {
-                var normalizedMeetingId = NormalizeMeetingIdForStorage(transcriptMeetingId);
+                var normalizedMeetingId = MeetingJoinParser.NormalizeMeetingIdForStorage(transcriptMeetingId);
                 _meetingContext.SetMeetingId(normalizedMeetingId);
                 _logger.LogInformation(
                     "Meeting context set from join request. MeetingId={MeetingId}, RawMeetingId={RawMeetingId}",
@@ -245,7 +245,28 @@ public sealed class BotService
         }
 
         if (string.IsNullOrWhiteSpace(title) &&
-            string.IsNullOrWhiteSpace(request.MeetingJoinUrl) &&
+            !string.IsNullOrWhiteSpace(request.MeetingJoinUrl) &&
+            MeetingJoinParser.TryParseTeamsJoinContext(request.MeetingJoinUrl, out _, out var organizerOidFallback) &&
+            !string.IsNullOrWhiteSpace(organizerOidFallback))
+        {
+            var threadFromUrl = MeetingJoinParser.ParseJoinUrl(request.MeetingJoinUrl).JoinMeetingId;
+            if (!string.IsNullOrWhiteSpace(threadFromUrl))
+            {
+                _logger.LogInformation(
+                    "MEETING[UI] Retrying meeting title via Graph (thread id from join URL). OrganizerOid={OrganizerOid}",
+                    organizerOidFallback.Trim());
+                title = await _onlineMeetingTitleService.TryGetSubjectForThreadAsync(
+                    organizerOidFallback.Trim(),
+                    threadFromUrl.Trim(),
+                    CancellationToken.None).ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(title))
+                {
+                    _logger.LogInformation("MEETING[UI] Graph did not return subject for thread id parsed from join URL.");
+                }
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(title) &&
             !string.IsNullOrWhiteSpace(request.OrganizerObjectId) &&
             !string.IsNullOrWhiteSpace(request.ChatThreadId))
         {
@@ -429,53 +450,6 @@ public sealed class BotService
             "Media UDP port range set to {Min}-{Max}. Open this UDP range inbound on your cloud NSG and Windows Firewall (plus TCP 8445 for media TLS).",
             min,
             max);
-    }
-
-    private static string NormalizeMeetingIdForStorage(string meetingId)
-    {
-        if (string.IsNullOrWhiteSpace(meetingId))
-        {
-            return meetingId;
-        }
-
-        var value = meetingId.Trim();
-        if (Guid.TryParse(value, out var parsedGuid))
-        {
-            return parsedGuid.ToString();
-        }
-
-        const string prefix = "19:meeting_";
-        const string suffix = "@thread.v2";
-        if (!value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
-            !value.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
-        {
-            return value;
-        }
-
-        var encoded = value[prefix.Length..^suffix.Length];
-        if (string.IsNullOrWhiteSpace(encoded))
-        {
-            return value;
-        }
-
-        // Teams join ids often embed a URL-safe base64 GUID payload in "19:meeting_<...>@thread.v2".
-        var base64 = encoded.Replace('-', '+').Replace('_', '/');
-        var pad = base64.Length % 4;
-        if (pad != 0)
-        {
-            base64 = base64.PadRight(base64.Length + (4 - pad), '=');
-        }
-
-        try
-        {
-            var bytes = Convert.FromBase64String(base64);
-            var decoded = Encoding.UTF8.GetString(bytes).Trim();
-            return Guid.TryParse(decoded, out var embeddedGuid) ? embeddedGuid.ToString() : value;
-        }
-        catch
-        {
-            return value;
-        }
     }
 
     /// <summary>

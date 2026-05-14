@@ -48,7 +48,7 @@ public sealed class OnlineMeetingTitleService
             var response = await graph.Users[organizerObjectId.Trim()].OnlineMeetings.GetAsync(
                 requestConfiguration =>
                 {
-                    requestConfiguration.QueryParameters.Top = 100;
+                    requestConfiguration.QueryParameters.Top = 200;
                     requestConfiguration.QueryParameters.Orderby = new[] { "startDateTime desc" };
                 },
                 cancellationToken).ConfigureAwait(false);
@@ -123,7 +123,7 @@ public sealed class OnlineMeetingTitleService
             var response = await graph.Users[organizerObjectId.Trim()].OnlineMeetings.GetAsync(
                 requestConfiguration =>
                 {
-                    requestConfiguration.QueryParameters.Top = 100;
+                    requestConfiguration.QueryParameters.Top = 200;
                     requestConfiguration.QueryParameters.Orderby = new[] { "startDateTime desc" };
                 },
                 cancellationToken).ConfigureAwait(false);
@@ -182,15 +182,7 @@ public sealed class OnlineMeetingTitleService
             return false;
         }
 
-        var variants = new[]
-        {
-            threadId,
-            Uri.EscapeDataString(threadId),
-            threadId.Replace(":", "%3A", StringComparison.OrdinalIgnoreCase),
-            threadId.Replace("@", "%40", StringComparison.OrdinalIgnoreCase)
-        };
-
-        foreach (var v in variants)
+        foreach (var v in MeetingJoinParser.EnumerateMeetingJoinUrlMatchTokens(threadId))
         {
             if (!string.IsNullOrEmpty(v) && joinWebUrl.Contains(v, StringComparison.OrdinalIgnoreCase))
             {
@@ -210,15 +202,7 @@ public sealed class OnlineMeetingTitleService
             return true;
         }
 
-        var variants = new[]
-        {
-            decodedThreadId,
-            Uri.EscapeDataString(decodedThreadId),
-            decodedThreadId.Replace(":", "%3A", StringComparison.OrdinalIgnoreCase),
-            decodedThreadId.Replace("@", "%40", StringComparison.OrdinalIgnoreCase)
-        };
-
-        foreach (var v in variants)
+        foreach (var v in MeetingJoinParser.EnumerateMeetingJoinUrlMatchTokens(decodedThreadId))
         {
             if (string.IsNullOrEmpty(v))
             {
