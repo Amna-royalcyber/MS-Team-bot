@@ -205,10 +205,16 @@ public sealed class CallHandler
                 _meetingContext.SetCallEstablishedUtc(established);
                 _transcriptionChunkManager.BeginMeeting(established);
                 var meetingTitle = _meetingContext.CurrentMeetingTitle;
-                if (!string.IsNullOrWhiteSpace(meetingTitle))
-                {
-                    _ = _transcriptBroadcaster.BroadcastMeetingTitleAsync(meetingTitle);
-                }
+                var meetingId = _meetingContext.CurrentMeetingId;
+                _logger.LogInformation(
+                    "MEETING[UI] Call established; re-broadcasting meeting header. TitlePresent={TitlePresent}, MeetingId={MeetingId}",
+                    !string.IsNullOrWhiteSpace(meetingTitle),
+                    meetingId ?? "(null)");
+                _ = _transcriptBroadcaster.BroadcastMeetingHeaderAsync(
+                    string.IsNullOrWhiteSpace(meetingTitle) ? null : meetingTitle.Trim(),
+                    string.IsNullOrWhiteSpace(meetingId) || string.Equals(meetingId, "unknown", StringComparison.OrdinalIgnoreCase)
+                        ? null
+                        : meetingId.Trim());
 
                 _logger.LogInformation(
                     "Call established. MediaHandler is receiving unmixed participant audio; speaking participants should produce per-source audio frames.");

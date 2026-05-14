@@ -219,16 +219,29 @@ public sealed class BotService
 
     private async Task ResolveAndBroadcastMeetingTitleAsync(JoinMeetingRequest request)
     {
+        _logger.LogInformation(
+            "MEETING[UI] Resolving meeting header. HasMeetingTitleInRequest={HasRequestTitle}, HasJoinUrl={HasJoinUrl}, HasChatThread={HasChatThread}",
+            !string.IsNullOrWhiteSpace(request.MeetingTitle),
+            !string.IsNullOrWhiteSpace(request.MeetingJoinUrl),
+            !string.IsNullOrWhiteSpace(request.ChatThreadId));
+
         var title = request.MeetingTitle?.Trim();
         if (string.IsNullOrWhiteSpace(title) &&
             !string.IsNullOrWhiteSpace(request.MeetingJoinUrl) &&
             MeetingJoinParser.TryParseTeamsJoinContext(request.MeetingJoinUrl, out _, out var organizerOid) &&
             !string.IsNullOrWhiteSpace(organizerOid))
         {
+            _logger.LogInformation(
+                "MEETING[UI] Looking up meeting title via Graph (join URL + organizer). OrganizerOid={OrganizerOid}",
+                organizerOid);
             title = await _onlineMeetingTitleService.TryGetSubjectForJoinUrlAsync(
                 organizerOid,
                 request.MeetingJoinUrl.Trim(),
                 CancellationToken.None).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                _logger.LogInformation("MEETING[UI] Graph did not return a matching online meeting subject for join URL.");
+            }
         }
 
         if (string.IsNullOrWhiteSpace(title) &&
@@ -236,20 +249,41 @@ public sealed class BotService
             !string.IsNullOrWhiteSpace(request.OrganizerObjectId) &&
             !string.IsNullOrWhiteSpace(request.ChatThreadId))
         {
+            _logger.LogInformation(
+                "MEETING[UI] Looking up meeting title via Graph (thread + organizer). OrganizerOid={OrganizerOid}",
+                request.OrganizerObjectId.Trim());
             title = await _onlineMeetingTitleService.TryGetSubjectForThreadAsync(
                 request.OrganizerObjectId.Trim(),
                 request.ChatThreadId.Trim(),
                 CancellationToken.None).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                _logger.LogInformation("MEETING[UI] Graph did not return a matching online meeting subject for thread id.");
+            }
         }
 
-        if (string.IsNullOrWhiteSpace(title))
+        if (!string.IsNullOrWhiteSpace(title))
         {
-            return;
+            _meetingContext.SetMeetingTitle(title);
         }
 
-        _meetingContext.SetMeetingTitle(title);
-        await _transcriptBroadcaster.BroadcastMeetingTitleAsync(title).ConfigureAwait(false);
-        _logger.LogInformation("Meeting title published to transcript UI: {Title}", title);
+        var meetingId = _meetingContext.CurrentMeetingId?.Trim();
+        var sent = await _transcriptBroadcaster.BroadcastMeetingHeaderAsync(title, meetingId).ConfigureAwait(false);
+        if (!sent)
+        {
+            _logger.LogWarning(
+                "MEETING[UI] Meeting header not broadcast (no title and no usable meeting id yet). MeetingIdContext={MeetingId}",
+                meetingId ?? "(null)");
+        }
+        else if (!string.IsNullOrWhiteSpace(title))
+        {
+            _logger.LogInformation("MEETING[UI] Join-phase header broadcast. Title={Title}, MeetingId={MeetingId}", title, meetingId);
+        }
+        else if (!string.IsNullOrWhiteSpace(meetingId) &&
+                 !string.Equals(meetingId, "unknown", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogInformation("MEETING[UI] Join-phase header broadcast (meeting id only). MeetingId={MeetingId}", meetingId);
+        }
     }
 
     public Task<HttpResponseMessage> ProcessNotificationAsync(HttpRequestMessage request)

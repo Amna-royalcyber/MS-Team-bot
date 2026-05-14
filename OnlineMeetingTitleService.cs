@@ -33,6 +33,7 @@ public sealed class OnlineMeetingTitleService
         var threadId = MeetingJoinParser.ParseJoinUrl(joinUrl).JoinMeetingId;
         if (string.IsNullOrWhiteSpace(threadId))
         {
+            _logger.LogInformation("MEETING[UI] Title lookup skipped: join URL has no meetup-join thread segment.");
             return null;
         }
 
@@ -54,9 +55,13 @@ public sealed class OnlineMeetingTitleService
 
             if (response?.Value is null)
             {
+                _logger.LogInformation(
+                    "MEETING[UI] Graph onlineMeetings returned no page for organizer {OrganizerObjectId}.",
+                    organizerObjectId);
                 return null;
             }
 
+            var scanned = 0;
             foreach (var om in response.Value)
             {
                 if (om is null || string.IsNullOrWhiteSpace(om.JoinWebUrl))
@@ -64,19 +69,31 @@ public sealed class OnlineMeetingTitleService
                     continue;
                 }
 
+                scanned++;
                 if (!JoinUrlsReferToSameMeeting(om.JoinWebUrl, joinUrl, threadId))
                 {
                     continue;
                 }
 
-                return string.IsNullOrWhiteSpace(om.Subject) ? null : om.Subject.Trim();
+                var subject = string.IsNullOrWhiteSpace(om.Subject) ? null : om.Subject.Trim();
+                _logger.LogInformation(
+                    "MEETING[UI] Graph matched online meeting by join URL. OrganizerOid={OrganizerObjectId}, Subject={Subject}, ScannedJoinWebUrls={Scanned}",
+                    organizerObjectId,
+                    subject ?? "(empty)",
+                    scanned);
+                return subject;
             }
+
+            _logger.LogInformation(
+                "MEETING[UI] No Graph online meeting matched join URL after scanning {Scanned} joinWebUrl entries. OrganizerOid={OrganizerObjectId}",
+                scanned,
+                organizerObjectId);
         }
         catch (Exception ex)
         {
-            _logger.LogInformation(
+            _logger.LogWarning(
                 ex,
-                "Could not resolve meeting title via Graph for organizer {OrganizerObjectId}. Ensure OnlineMeetings.Read.All is granted with admin consent.",
+                "MEETING[UI] Graph online meeting title lookup failed for organizer {OrganizerObjectId}. Check OnlineMeetings.Read.All and admin consent.",
                 organizerObjectId);
         }
 
@@ -113,9 +130,13 @@ public sealed class OnlineMeetingTitleService
 
             if (response?.Value is null)
             {
+                _logger.LogInformation(
+                    "MEETING[UI] Graph onlineMeetings returned no page for organizer {OrganizerObjectId} (thread match).",
+                    organizerObjectId);
                 return null;
             }
 
+            var scanned = 0;
             foreach (var om in response.Value)
             {
                 if (om is null || string.IsNullOrWhiteSpace(om.JoinWebUrl))
@@ -123,19 +144,31 @@ public sealed class OnlineMeetingTitleService
                     continue;
                 }
 
+                scanned++;
                 if (!JoinUrlContainsThread(om.JoinWebUrl, thread))
                 {
                     continue;
                 }
 
-                return string.IsNullOrWhiteSpace(om.Subject) ? null : om.Subject.Trim();
+                var subject = string.IsNullOrWhiteSpace(om.Subject) ? null : om.Subject.Trim();
+                _logger.LogInformation(
+                    "MEETING[UI] Graph matched online meeting by thread id. OrganizerOid={OrganizerObjectId}, Subject={Subject}, ScannedJoinWebUrls={Scanned}",
+                    organizerObjectId,
+                    subject ?? "(empty)",
+                    scanned);
+                return subject;
             }
+
+            _logger.LogInformation(
+                "MEETING[UI] No Graph online meeting matched thread id after scanning {Scanned} joinWebUrl entries. OrganizerOid={OrganizerObjectId}",
+                scanned,
+                organizerObjectId);
         }
         catch (Exception ex)
         {
-            _logger.LogInformation(
+            _logger.LogWarning(
                 ex,
-                "Could not resolve meeting title via Graph for organizer {OrganizerObjectId} and thread.",
+                "MEETING[UI] Graph online meeting title lookup (thread) failed for organizer {OrganizerObjectId}. Check OnlineMeetings.Read.All and admin consent.",
                 organizerObjectId);
         }
 

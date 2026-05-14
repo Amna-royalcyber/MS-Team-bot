@@ -18,6 +18,14 @@
       box-shadow: 0 2px 8px rgba(0,0,0,.15);
       letter-spacing: 0.02em;
     }
+    .meeting-title-bar .meeting-id-line {
+      display: block;
+      font-size: 0.82rem;
+      font-weight: 500;
+      opacity: 0.92;
+      margin-top: 6px;
+      word-break: break-all;
+    }
     .page-inner { padding: 0 24px 24px; }
     h1 { margin-bottom: 8px; font-size: 1.35rem; }
     .row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
@@ -35,7 +43,10 @@
   </style>
 </head>
 <body>
-  <header id="meetingTitleBar" class="meeting-title-bar">Live transcription</header>
+  <header id="meetingTitleBar" class="meeting-title-bar">
+    <span id="meetingHeaderTitle">Live transcription</span>
+    <span id="meetingHeaderId" class="meeting-id-line" hidden></span>
+  </header>
   <div class="page-inner">
   <h1>Teams Bot Live Transcription</h1>
   <p>Enter a Teams meeting join URL, then click Join Call. The meeting title appears above when resolved (Graph or optional override).</p>
@@ -58,7 +69,8 @@
     const transcriptsEl = document.getElementById("transcripts");
     const meetingUrlEl = document.getElementById("meetingUrl");
     const meetingTitleOverrideEl = document.getElementById("meetingTitleOverride");
-    const meetingTitleBarEl = document.getElementById("meetingTitleBar");
+    const meetingHeaderTitleEl = document.getElementById("meetingHeaderTitle");
+    const meetingHeaderIdEl = document.getElementById("meetingHeaderId");
     const joinBtn = document.getElementById("joinBtn");
 
     const connection = new signalR.HubConnectionBuilder()
@@ -77,8 +89,18 @@
 
     connection.on("meeting-title", (payload) => {
       const t = pick(payload, "title", "Title");
+      const mid = pick(payload, "meetingId", "MeetingId");
       if (t != null && String(t).trim() !== "") {
-        meetingTitleBarEl.textContent = String(t).trim();
+        meetingHeaderTitleEl.textContent = String(t).trim();
+      } else {
+        meetingHeaderTitleEl.textContent = "Live transcription";
+      }
+      if (mid != null && String(mid).trim() !== "" && String(mid).toLowerCase() !== "unknown") {
+        meetingHeaderIdEl.textContent = "Meeting ID: " + String(mid).trim();
+        meetingHeaderIdEl.hidden = false;
+      } else {
+        meetingHeaderIdEl.textContent = "";
+        meetingHeaderIdEl.hidden = true;
       }
     });
 

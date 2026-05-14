@@ -16,23 +16,44 @@ public sealed class TranscriptBroadcaster
         _logger = logger;
     }
 
-    /// <summary>Updates transcript page header with the current meeting title.</summary>
-    public async Task BroadcastMeetingTitleAsync(string title)
+    /// <summary>Updates transcript page header with meeting title and/or correlation meeting id (SignalR event <c>meeting-title</c>).</summary>
+    public async Task<bool> BroadcastMeetingHeaderAsync(string? title, string? meetingId)
     {
-        if (string.IsNullOrWhiteSpace(title))
+        var mid = string.IsNullOrWhiteSpace(meetingId)
+            ? null
+            : meetingId.Trim();
+        if (string.Equals(mid, "unknown", StringComparison.OrdinalIgnoreCase))
         {
-            return;
+            mid = null;
+        }
+
+        var tit = string.IsNullOrWhiteSpace(title) ? null : title.Trim();
+        if (tit is null && mid is null)
+        {
+            _logger.LogDebug("MEETING[UI] Skip SignalR meeting-title: no title and no usable meeting id.");
+            return false;
         }
 
         try
         {
             await _hubContext.Clients.All.SendAsync(
                 "meeting-title",
-                new { title = title.Trim() });
+                new
+                {
+                    title = tit,
+                    meetingId = mid
+                });
+            _logger.LogInformation(
+                "MEETING[UI] SignalR meeting-title sent. HasTitle={HasTitle}, MeetingId={MeetingId}, TitleChars={TitleChars}",
+                tit is not null,
+                mid ?? "(none)",
+                tit?.Length ?? 0);
+            return true;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "SignalR meeting-title broadcast failed.");
+            _logger.LogError(ex, "MEETING[UI] SignalR meeting-title broadcast failed.");
+            return false;
         }
     }
 
