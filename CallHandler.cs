@@ -18,6 +18,7 @@ public sealed class CallHandler
     private readonly MeetingContextStore _meetingContext;
     private readonly ParticipantManager _participantManager;
     private readonly TranscriptionChunkManager _transcriptionChunkManager;
+    private readonly TranscriptBroadcaster _transcriptBroadcaster;
     private readonly ILogger<CallHandler> _logger;
     private ICommunicationsClient? _communicationsClient;
     private readonly object _activeCallLock = new();
@@ -30,6 +31,7 @@ public sealed class CallHandler
         MeetingContextStore meetingContext,
         ParticipantManager participantManager,
         TranscriptionChunkManager transcriptionChunkManager,
+        TranscriptBroadcaster transcriptBroadcaster,
         ILogger<CallHandler> logger)
     {
         _settings = settings;
@@ -38,6 +40,7 @@ public sealed class CallHandler
         _meetingContext = meetingContext;
         _participantManager = participantManager;
         _transcriptionChunkManager = transcriptionChunkManager;
+        _transcriptBroadcaster = transcriptBroadcaster;
         _logger = logger;
     }
 
@@ -183,7 +186,7 @@ public sealed class CallHandler
                 ex);
         }
 
-        call.OnUpdated += (_, args) =>
+        call.OnUpdated += (_sender, args) =>
         {
             var r = args.NewResource;
             var ri = r?.ResultInfo;
@@ -201,6 +204,12 @@ public sealed class CallHandler
                 var established = DateTime.UtcNow;
                 _meetingContext.SetCallEstablishedUtc(established);
                 _transcriptionChunkManager.BeginMeeting(established);
+                var meetingTitle = _meetingContext.CurrentMeetingTitle;
+                if (!string.IsNullOrWhiteSpace(meetingTitle))
+                {
+                    _ = _transcriptBroadcaster.BroadcastMeetingTitleAsync(meetingTitle);
+                }
+
                 _logger.LogInformation(
                     "Call established. MediaHandler is receiving unmixed participant audio; speaking participants should produce per-source audio frames.");
             }

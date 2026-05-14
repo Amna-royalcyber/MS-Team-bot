@@ -23,4 +23,7 @@ public sealed class JoinMeetingRequest
 
     /// <summary>Meeting tenant; defaults to bot <c>AzureAd:TenantId</c> when omitted.</summary>
     public string? MeetingTenantId { get; set; }
+
+    /// <summary>Optional display title for the transcript UI. If omitted with <see cref="MeetingJoinUrl"/>, the bot tries Graph <c>onlineMeetings</c> (requires OnlineMeetings.Read.All).</summary>
+    public string? MeetingTitle { get; set; }
 }

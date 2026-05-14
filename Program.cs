@@ -102,6 +102,7 @@ public static class Program
         builder.Services.AddSingleton<IChunkManager>(sp => sp.GetRequiredService<TranscriptionChunkManager>());
         builder.Services.AddHostedService(sp => sp.GetRequiredService<TranscriptionChunkManager>());
         builder.Services.AddSingleton<TranscriptBroadcaster>();
+        builder.Services.AddSingleton<OnlineMeetingTitleService>();
         builder.Services.AddSingleton<SsrcParticipantMapper>();
         builder.Services.AddSingleton<EntraUserResolver>();
         builder.Services.AddSingleton<MeetingParticipantService>();

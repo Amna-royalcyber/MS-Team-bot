@@ -16,6 +16,26 @@ public sealed class TranscriptBroadcaster
         _logger = logger;
     }
 
+    /// <summary>Updates transcript page header with the current meeting title.</summary>
+    public async Task BroadcastMeetingTitleAsync(string title)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return;
+        }
+
+        try
+        {
+            await _hubContext.Clients.All.SendAsync(
+                "meeting-title",
+                new { title = title.Trim() });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "SignalR meeting-title broadcast failed.");
+        }
+    }
+
     /// <summary>Forward final transcript as produced by the speech layer (identity already set upstream).</summary>
     public async Task BroadcastStructuredTranscriptAsync(
         string intraId,

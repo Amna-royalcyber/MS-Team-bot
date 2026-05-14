@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace TeamsMediaBot;
@@ -39,6 +40,70 @@ public static class MeetingJoinParser
         }
 
         return new MeetingJoinUrlParts(threadId, passcode);
+    }
+
+    /// <summary>
+    /// Reads <c>?context=</c> JSON from a meetup-join URL (Tid, Oid) for Graph calls such as online meeting lookup.
+    /// </summary>
+    public static bool TryParseTeamsJoinContext(string? joinUrl, out string? tenantId, out string? organizerObjectId)
+    {
+        tenantId = null;
+        organizerObjectId = null;
+        if (string.IsNullOrWhiteSpace(joinUrl) || !Uri.TryCreate(joinUrl.Trim(), UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        var raw = GetQueryParameter(uri.Query, "context");
+        if (string.IsNullOrEmpty(raw))
+        {
+            return false;
+        }
+
+        var current = raw;
+        for (var i = 0; i < 3; i++)
+        {
+            string decoded;
+            try
+            {
+                decoded = i == 0 ? current : Uri.UnescapeDataString(current);
+            }
+            catch
+            {
+                return false;
+            }
+
+            try
+            {
+                using var doc = JsonDocument.Parse(decoded);
+                var root = doc.RootElement;
+                if (root.TryGetProperty("Tid", out var tid) && tid.ValueKind == JsonValueKind.String)
+                {
+                    tenantId = tid.GetString();
+                }
+                else if (root.TryGetProperty("tid", out var tidLower) && tidLower.ValueKind == JsonValueKind.String)
+                {
+                    tenantId = tidLower.GetString();
+                }
+
+                if (root.TryGetProperty("Oid", out var oid) && oid.ValueKind == JsonValueKind.String)
+                {
+                    organizerObjectId = oid.GetString();
+                }
+                else if (root.TryGetProperty("oid", out var oidLower) && oidLower.ValueKind == JsonValueKind.String)
+                {
+                    organizerObjectId = oidLower.GetString();
+                }
+
+                return !string.IsNullOrWhiteSpace(organizerObjectId);
+            }
+            catch (JsonException)
+            {
+                current = decoded;
+            }
+        }
+
+        return false;
     }
 
     private static string? GetQueryParameter(string query, string key)

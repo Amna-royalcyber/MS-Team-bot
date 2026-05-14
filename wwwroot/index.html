@@ -5,10 +5,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Teams Bot Transcription</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 24px; max-width: 900px; }
-    h1 { margin-bottom: 8px; }
-    .row { display: flex; gap: 8px; margin-bottom: 12px; }
-    input { flex: 1; padding: 10px; }
+    * { box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; margin: 0; padding: 0; max-width: 900px; margin-left: auto; margin-right: auto; }
+    .meeting-title-bar {
+      text-align: center;
+      font-size: 1.2rem;
+      font-weight: 600;
+      margin: 0 0 16px 0;
+      padding: 14px 20px;
+      background: linear-gradient(180deg, #1a237e 0%, #283593 100%);
+      color: #fff;
+      box-shadow: 0 2px 8px rgba(0,0,0,.15);
+      letter-spacing: 0.02em;
+    }
+    .page-inner { padding: 0 24px 24px; }
+    h1 { margin-bottom: 8px; font-size: 1.35rem; }
+    .row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+    input { flex: 1; min-width: 200px; padding: 10px; }
     button { padding: 10px 14px; cursor: pointer; }
     #status { margin: 10px 0; color: #1f4f8f; }
     #roster { margin: 10px 0; padding: 10px; background: #f5f7fa; border-radius: 6px; font-size: 14px; }
@@ -22,17 +35,21 @@
   </style>
 </head>
 <body>
+  <header id="meetingTitleBar" class="meeting-title-bar">Live transcription</header>
+  <div class="page-inner">
   <h1>Teams Bot Live Transcription</h1>
-  <p>Enter a Teams meeting join URL, then click Join Call.</p>
+  <p>Enter a Teams meeting join URL, then click Join Call. The meeting title appears above when resolved (Graph or optional override).</p>
 
   <div class="row">
     <input id="meetingUrl" type="text" placeholder="https://teams.microsoft.com/l/meetup-join/..." />
+    <input id="meetingTitleOverride" type="text" placeholder="Meeting title override (optional)" />
     <button id="joinBtn">Join Call</button>
   </div>
 
   <div id="status">Connecting to transcript stream...</div>
   <div id="roster" hidden></div>
   <div id="transcripts"></div>
+  </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.7/signalr.min.js"></script>
   <script>
@@ -40,6 +57,8 @@
     const rosterEl = document.getElementById("roster");
     const transcriptsEl = document.getElementById("transcripts");
     const meetingUrlEl = document.getElementById("meetingUrl");
+    const meetingTitleOverrideEl = document.getElementById("meetingTitleOverride");
+    const meetingTitleBarEl = document.getElementById("meetingTitleBar");
     const joinBtn = document.getElementById("joinBtn");
 
     const connection = new signalR.HubConnectionBuilder()
@@ -55,6 +74,13 @@
       if (pascal && pascal in obj && obj[pascal] != null && obj[pascal] !== "") return obj[pascal];
       return undefined;
     }
+
+    connection.on("meeting-title", (payload) => {
+      const t = pick(payload, "title", "Title");
+      if (t != null && String(t).trim() !== "") {
+        meetingTitleBarEl.textContent = String(t).trim();
+      }
+    });
 
     connection.on("roster", (payload) => {
       lastRosterByAad = {};
@@ -152,7 +178,10 @@
         const response = await fetch("/api/bot/join", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ meetingJoinUrl })
+          body: JSON.stringify({
+            meetingJoinUrl,
+            meetingTitle: meetingTitleOverrideEl.value.trim() || null
+          })
         });
 
         if (!response.ok) {

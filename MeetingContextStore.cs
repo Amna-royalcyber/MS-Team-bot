@@ -5,6 +5,7 @@ public sealed class MeetingContextStore
     private readonly object _lock = new();
     private string _meetingId = "unknown";
     private string _bridgeLeadId = string.Empty;
+    private string _meetingTitle = string.Empty;
     private DateTime? _callEstablishedUtc;
 
     public string CurrentMeetingId
@@ -26,6 +27,18 @@ public sealed class MeetingContextStore
             lock (_lock)
             {
                 return _bridgeLeadId;
+            }
+        }
+    }
+
+    /// <summary>Human-readable meeting title for SignalR UI (optional).</summary>
+    public string CurrentMeetingTitle
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _meetingTitle;
             }
         }
     }
@@ -68,6 +81,19 @@ public sealed class MeetingContextStore
         }
     }
 
+    public void SetMeetingTitle(string? title)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return;
+        }
+
+        lock (_lock)
+        {
+            _meetingTitle = title.Trim();
+        }
+    }
+
     public void SetCallEstablishedUtc(DateTime utc)
     {
         var normalized = utc.Kind == DateTimeKind.Utc ? utc : utc.ToUniversalTime();
@@ -83,6 +109,7 @@ public sealed class MeetingContextStore
         {
             _meetingId = "unknown";
             _bridgeLeadId = string.Empty;
+            _meetingTitle = string.Empty;
             _callEstablishedUtc = null;
         }
     }

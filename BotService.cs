@@ -114,6 +114,8 @@ public sealed class BotService
     private readonly CallHandler _callHandler;
     private readonly MediaHandler _mediaHandler;
     private readonly MeetingContextStore _meetingContext;
+    private readonly OnlineMeetingTitleService _onlineMeetingTitleService;
+    private readonly TranscriptBroadcaster _transcriptBroadcaster;
     private readonly ILogger<BotService> _logger;
     private readonly ILogger<ClientCredentialsAuthenticationProvider> _authLogger;
     private readonly IGraphLogger _graphLogger;
@@ -127,6 +129,8 @@ public sealed class BotService
         CallHandler callHandler,
         MediaHandler mediaHandler,
         MeetingContextStore meetingContext,
+        OnlineMeetingTitleService onlineMeetingTitleService,
+        TranscriptBroadcaster transcriptBroadcaster,
         ILogger<ClientCredentialsAuthenticationProvider> authLogger,
         ILogger<BotService> logger)
     {
@@ -134,6 +138,8 @@ public sealed class BotService
         _callHandler = callHandler;
         _mediaHandler = mediaHandler;
         _meetingContext = meetingContext;
+        _onlineMeetingTitleService = onlineMeetingTitleService;
+        _transcriptBroadcaster = transcriptBroadcaster;
         _authLogger = authLogger;
         _logger = logger;
         _graphLogger = new GraphLogger(_settings.ClientId);
@@ -174,6 +180,8 @@ public sealed class BotService
                     transcriptMeetingId);
             }
 
+            await ResolveAndBroadcastMeetingTitleAsync(request).ConfigureAwait(false);
+
             _logger.LogInformation("Joining Teams meeting (Graph Communications).");
 
             if (!string.IsNullOrWhiteSpace(request.MeetingJoinUrl))
@@ -207,6 +215,41 @@ public sealed class BotService
         {
             _joinGate.Release();
         }
+    }
+
+    private async Task ResolveAndBroadcastMeetingTitleAsync(JoinMeetingRequest request)
+    {
+        var title = request.MeetingTitle?.Trim();
+        if (string.IsNullOrWhiteSpace(title) &&
+            !string.IsNullOrWhiteSpace(request.MeetingJoinUrl) &&
+            MeetingJoinParser.TryParseTeamsJoinContext(request.MeetingJoinUrl, out _, out var organizerOid) &&
+            !string.IsNullOrWhiteSpace(organizerOid))
+        {
+            title = await _onlineMeetingTitleService.TryGetSubjectForJoinUrlAsync(
+                organizerOid,
+                request.MeetingJoinUrl.Trim(),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+
+        if (string.IsNullOrWhiteSpace(title) &&
+            string.IsNullOrWhiteSpace(request.MeetingJoinUrl) &&
+            !string.IsNullOrWhiteSpace(request.OrganizerObjectId) &&
+            !string.IsNullOrWhiteSpace(request.ChatThreadId))
+        {
+            title = await _onlineMeetingTitleService.TryGetSubjectForThreadAsync(
+                request.OrganizerObjectId.Trim(),
+                request.ChatThreadId.Trim(),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return;
+        }
+
+        _meetingContext.SetMeetingTitle(title);
+        await _transcriptBroadcaster.BroadcastMeetingTitleAsync(title).ConfigureAwait(false);
+        _logger.LogInformation("Meeting title published to transcript UI: {Title}", title);
     }
 
     public Task<HttpResponseMessage> ProcessNotificationAsync(HttpRequestMessage request)
