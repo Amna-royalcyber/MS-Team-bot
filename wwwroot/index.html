@@ -49,11 +49,10 @@
   </header>
   <div class="page-inner">
   <h1>Teams Bot Live Transcription</h1>
-  <p>Enter a Teams meeting join URL, then click Join Call. The meeting title appears above when resolved (Graph or optional override).</p>
+  <p>Enter a Teams meeting join URL, then click Join Call. The meeting title appears above when resolved from Graph.</p>
 
   <div class="row">
     <input id="meetingUrl" type="text" placeholder="https://teams.microsoft.com/l/meetup-join/..." />
-    <input id="meetingTitleOverride" type="text" placeholder="Meeting title override (optional)" />
     <button id="joinBtn">Join Call</button>
   </div>
 
@@ -68,7 +67,6 @@
     const rosterEl = document.getElementById("roster");
     const transcriptsEl = document.getElementById("transcripts");
     const meetingUrlEl = document.getElementById("meetingUrl");
-    const meetingTitleOverrideEl = document.getElementById("meetingTitleOverride");
     const meetingHeaderTitleEl = document.getElementById("meetingHeaderTitle");
     const meetingHeaderIdEl = document.getElementById("meetingHeaderId");
     const joinBtn = document.getElementById("joinBtn");
@@ -202,10 +200,7 @@
         const response = await fetch("/api/bot/join", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            meetingJoinUrl,
-            meetingTitle: meetingTitleOverrideEl.value.trim() || null
-          })
+          body: JSON.stringify({ meetingJoinUrl })
         });
 
         if (!response.ok) {

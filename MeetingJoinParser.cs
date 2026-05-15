@@ -160,6 +160,22 @@ public static class MeetingJoinParser
     }
 
     /// <summary>
+    /// ServiceNow ticket id from meeting title prefix before first underscore (e.g. <c>INC139282_Incident call</c> → <c>INC139282</c>).
+    /// </summary>
+    public static string? ExtractSnowTicketIdFromTitle(string? meetingTitle)
+    {
+        if (string.IsNullOrWhiteSpace(meetingTitle))
+        {
+            return null;
+        }
+
+        var title = meetingTitle.Trim();
+        var underscore = title.IndexOf('_');
+        var ticket = underscore >= 0 ? title[..underscore] : title;
+        return string.IsNullOrWhiteSpace(ticket) ? null : ticket.Trim();
+    }
+
+    /// <summary>
     /// Stable meeting key for storage / UI correlation (decodes <c>19:meeting_…@thread.v2</c> embedded GUID when present).
     /// </summary>
     public static string NormalizeMeetingIdForStorage(string meetingId)

@@ -35,15 +35,15 @@ public sealed class TimeWindowChunk
 }
 
 /// <summary>
-/// Strict wall-clock 3-minute windows from call anchor. No cross-chunk duplication; each final transcript item once per dedupe key.
+/// Strict wall-clock 1-minute windows from call anchor. Posts JSON to the MIM API Gateway endpoint.
 /// </summary>
 public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
 {
-    private static readonly TimeSpan ChunkDuration = TimeSpan.FromMinutes(3);
+    private static readonly TimeSpan ChunkDuration = TimeSpan.FromMinutes(1);
 
-    private const string AlbFlagLengthLimitReached = "0";
-    private const string AlbFlagLongSilence = "1";
-    private const string AlbFlagTimerUpdate = "2";
+    private const int MimFlagHasTranscript = 0;
+    private const int MimFlagSilence = 1;
+    private const int MimFlagNoParticipants = 2;
 
     private readonly BotSettings _settings;
     private readonly MeetingContextStore _meetingContext;
@@ -99,18 +99,50 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
         }
     }
 
-    public void EndMeeting()
+    public void EndMeeting() => _ = EndMeetingAsync();
+
+    public async Task EndMeetingAsync(CancellationToken cancellationToken = default)
     {
-        Interlocked.Exchange(ref _anchorOnce, 0);
+        TimeWindowChunk? remaining;
         lock (_lock)
         {
-            _hasAnchor = false;
+            remaining = _currentWindow;
             _currentWindow = null;
+            _hasAnchor = false;
             _dedupeKeys.Clear();
+            Interlocked.Exchange(ref _anchorOnce, 0);
+        }
+
+        if (remaining is not null)
+        {
+            await FlushWindowAsync(remaining, flag: null, cancellationToken).ConfigureAwait(false);
         }
     }
 
-    /// <summary>Record a final transcript line into the correct 3-minute chunk (may flush prior empty chunks).</summary>
+    public async Task FlushNoParticipantsAsync(CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(_settings.TranscriptAlbEndpoint))
+        {
+            return;
+        }
+
+        TimeWindowChunk? window;
+        lock (_lock)
+        {
+            if (!_hasAnchor || _currentWindow is null)
+            {
+                return;
+            }
+
+            window = _currentWindow;
+            _currentWindow = CreateNewWindow(_currentWindow.EndTime);
+            _dedupeKeys.Clear();
+        }
+
+        await FlushWindowAsync(window, MimFlagNoParticipants, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Record a final transcript line into the correct 1-minute chunk (may flush prior empty chunks).</summary>
     public async Task RecordFinalAsync(
         DateTime utteranceUtc,
         string participantId,
@@ -294,7 +326,7 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
         };
     }
 
-    private async Task FlushWindowAsync(TimeWindowChunk window, string? flag, CancellationToken cancellationToken)
+    private async Task FlushWindowAsync(TimeWindowChunk window, int? flag, CancellationToken cancellationToken)
     {
         var endpoint = _settings.TranscriptAlbEndpoint;
         if (string.IsNullOrWhiteSpace(endpoint))
@@ -308,7 +340,8 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
             window.StartTime,
             window.EndTime,
             ordered.Count);
-        var transcriptList = new List<Dictionary<string, string>>();
+
+        var transcript = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var fragment in ordered)
         {
             if (string.IsNullOrWhiteSpace(fragment.Text))
@@ -317,18 +350,31 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
             }
 
             var speaker = string.IsNullOrWhiteSpace(fragment.ParticipantName) ? "Unknown" : fragment.ParticipantName.Trim();
-            transcriptList.Add(new Dictionary<string, string>(StringComparer.Ordinal)
+            var line = fragment.Text.Trim();
+            if (transcript.TryGetValue(speaker, out var existing))
             {
-                [speaker] = fragment.Text.Trim()
-            });
+                transcript[speaker] = $"{existing} {line}";
+            }
+            else
+            {
+                transcript[speaker] = line;
+            }
         }
 
-        var payload = new AlbChunkPayload
+        var resolvedFlag = flag ?? ResolveMimFlag(transcript.Count);
+        var snowTicket = _meetingContext.CurrentSnowTicketId;
+        if (string.IsNullOrWhiteSpace(snowTicket))
         {
-            MeetingId = NormalizeMeetingIdForAlb(_meetingContext.CurrentMeetingId),
-            Transcript = transcriptList,
-            Flag = flag ?? ResolveAlbFlag(transcriptList.Count),
-            BridgeLeadId = _meetingContext.CurrentBridgeLeadId
+            snowTicket = MeetingJoinParser.ExtractSnowTicketIdFromTitle(_meetingContext.CurrentMeetingTitle);
+        }
+
+        var payload = new MimChunkPayload
+        {
+            MeetingId = NormalizeMeetingIdForOutbound(_meetingContext.CurrentMeetingId),
+            Transcript = transcript,
+            Flag = resolvedFlag,
+            BridgeLeadId = _meetingContext.CurrentBridgeLeadId,
+            SnowTicketId = snowTicket
         };
 
         try
@@ -348,27 +394,29 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning(
-                    "ALB chunk post failed. Status={Status}, MeetingId={MeetingId}, Flag={Flag}, Start={Start}, End={End}, Lines={Count}.",
+                    "MIM chunk post failed. Status={Status}, MeetingId={MeetingId}, Flag={Flag}, SnowTicketId={SnowTicketId}, Start={Start}, End={End}, Speakers={Count}.",
                     (int)response.StatusCode,
                     payload.MeetingId,
                     payload.Flag,
+                    payload.SnowTicketId ?? "(none)",
                     window.StartTime,
                     window.EndTime,
-                    window.Fragments.Count);
+                    transcript.Count);
                 return;
             }
 
             _logger.LogInformation(
-                "Posted transcript chunk to ALB. MeetingId={MeetingId}, Flag={Flag}, Start={Start}, End={End}, Lines={Count}.",
+                "Posted transcript chunk to MIM API. MeetingId={MeetingId}, Flag={Flag}, SnowTicketId={SnowTicketId}, Start={Start}, End={End}, Speakers={Count}.",
                 payload.MeetingId,
                 payload.Flag,
+                payload.SnowTicketId ?? "(none)",
                 window.StartTime,
                 window.EndTime,
-                window.Fragments.Count);
+                transcript.Count);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "ALB chunk post error for window {Start}–{End}.", window.StartTime, window.EndTime);
+            _logger.LogError(ex, "MIM chunk post error for window {Start}–{End}.", window.StartTime, window.EndTime);
         }
         finally
         {
@@ -376,12 +424,10 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
         }
     }
 
-    private static string ResolveAlbFlag(int transcriptCount)
-    {
-        return transcriptCount == 0 ? AlbFlagLongSilence : AlbFlagLengthLimitReached;
-    }
+    private static int ResolveMimFlag(int transcriptSpeakerCount) =>
+        transcriptSpeakerCount == 0 ? MimFlagSilence : MimFlagHasTranscript;
 
-    private static string NormalizeMeetingIdForAlb(string? meetingId)
+    private static string NormalizeMeetingIdForOutbound(string? meetingId)
     {
         if (string.IsNullOrWhiteSpace(meetingId))
         {
@@ -436,18 +482,21 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
         return value;
     }
 
-    private sealed class AlbChunkPayload
+    private sealed class MimChunkPayload
     {
         [JsonPropertyName("meeting_id")]
         public string MeetingId { get; set; } = string.Empty;
 
         [JsonPropertyName("transcript")]
-        public List<Dictionary<string, string>> Transcript { get; set; } = new();
-
-        [JsonPropertyName("flag")]
-        public string Flag { get; set; } = string.Empty;
+        public Dictionary<string, string> Transcript { get; set; } = new(StringComparer.Ordinal);
 
         [JsonPropertyName("bridge_lead_id")]
         public string BridgeLeadId { get; set; } = string.Empty;
+
+        [JsonPropertyName("snow_ticket_id")]
+        public string? SnowTicketId { get; set; }
+
+        [JsonPropertyName("flag")]
+        public int Flag { get; set; }
     }
 }

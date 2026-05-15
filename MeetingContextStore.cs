@@ -6,6 +6,7 @@ public sealed class MeetingContextStore
     private string _meetingId = "unknown";
     private string _bridgeLeadId = string.Empty;
     private string _meetingTitle = string.Empty;
+    private string _snowTicketId = string.Empty;
     private DateTime? _callEstablishedUtc;
 
     public string CurrentMeetingId
@@ -43,7 +44,19 @@ public sealed class MeetingContextStore
         }
     }
 
-    /// <summary>Wall-clock time when Graph reports the call established (used for 3-minute transcript windows).</summary>
+    /// <summary>ServiceNow ticket id parsed from meeting title (prefix before first underscore).</summary>
+    public string CurrentSnowTicketId
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _snowTicketId;
+            }
+        }
+    }
+
+    /// <summary>Wall-clock time when Graph reports the call established (used for transcript windows).</summary>
     public DateTime? CallEstablishedUtc
     {
         get
@@ -90,7 +103,9 @@ public sealed class MeetingContextStore
 
         lock (_lock)
         {
-            _meetingTitle = title.Trim();
+            var trimmed = title.Trim();
+            _meetingTitle = trimmed;
+            _snowTicketId = MeetingJoinParser.ExtractSnowTicketIdFromTitle(trimmed) ?? string.Empty;
         }
     }
 
@@ -110,6 +125,7 @@ public sealed class MeetingContextStore
             _meetingId = "unknown";
             _bridgeLeadId = string.Empty;
             _meetingTitle = string.Empty;
+            _snowTicketId = string.Empty;
             _callEstablishedUtc = null;
         }
     }

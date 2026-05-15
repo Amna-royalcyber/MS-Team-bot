@@ -93,8 +93,21 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
         }
     }
 
+    private static readonly TimeSpan DynamoPollDelayAfterCallEstablished = TimeSpan.FromMinutes(2);
+
     private async Task PollAndNotifyAsync(CancellationToken cancellationToken)
     {
+        var establishedUtc = _meetingContext.CallEstablishedUtc;
+        if (establishedUtc is null)
+        {
+            return;
+        }
+
+        if (DateTime.UtcNow - establishedUtc.Value < DynamoPollDelayAfterCallEstablished)
+        {
+            return;
+        }
+
         var tableName = _settings.DynamoMeetingRecordsTableName!.Trim();
         var meetingIdKey = _meetingContext.CurrentMeetingId?.Trim();
         if (string.IsNullOrWhiteSpace(meetingIdKey) ||

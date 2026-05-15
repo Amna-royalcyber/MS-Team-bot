@@ -73,7 +73,7 @@ public static class Program
             DynamoMeetingRecordsTableName = ReadOptional(builder.Configuration, "BOT_DYNAMO_TABLE_NAME", "Bot:DynamoMeetingRecordsTableName"),
             DynamoRegion = ReadOptional(builder.Configuration, "BOT_DYNAMO_REGION", "Bot:DynamoRegion"),
             DynamoPollIntervalSeconds = Math.Clamp(
-                ReadInt(builder.Configuration, "BOT_DYNAMO_POLL_SECONDS", "Bot:DynamoPollIntervalSeconds", 60),
+                ReadInt(builder.Configuration, "BOT_DYNAMO_POLL_SECONDS", "Bot:DynamoPollIntervalSeconds", 120),
                 30,
                 600),
             BotDmSenderUserObjectId = ReadOptional(builder.Configuration, "BOT_DM_SENDER_USER_ID", "Bot:BotDmSenderUserObjectId"),

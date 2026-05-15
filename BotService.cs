@@ -64,7 +64,7 @@ public sealed class BotSettings
     /// <summary>Optional merge window when multiplexing multiple participants into one timeline (milliseconds).</summary>
     public int TranscriptTimelineMergeMilliseconds { get; init; } = 20;
 
-    /// <summary>Optional ALB endpoint that receives 3-minute transcript JSON payloads.</summary>
+    /// <summary>MIM API Gateway endpoint for 1-minute transcript JSON payloads.</summary>
     public string? TranscriptAlbEndpoint { get; init; }
 
     /// <summary>Wait up to this many ms for Entra mapping before sending buffered PCM to Transcribe (5000–10000).</summary>
@@ -79,8 +79,8 @@ public sealed class BotSettings
     /// <summary>AWS region for DynamoDB polling (for example: us-east-1).</summary>
     public string? DynamoRegion { get; init; }
 
-    /// <summary>Polling cadence in seconds for DynamoDB bridge lead notifications.</summary>
-    public int DynamoPollIntervalSeconds { get; init; } = 60;
+    /// <summary>Polling cadence in seconds for DynamoDB bridge lead notifications (first poll waits 2 minutes after call established).</summary>
+    public int DynamoPollIntervalSeconds { get; init; } = 120;
 
     /// <summary>
     /// Entra user object id used as sender while creating Teams one-on-one chats through Graph.

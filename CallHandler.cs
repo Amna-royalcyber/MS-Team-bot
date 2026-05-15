@@ -230,7 +230,7 @@ public sealed class CallHandler
                         _activeCall = null;
                     }
                 }
-                _transcriptionChunkManager.EndMeeting();
+                _ = _transcriptionChunkManager.EndMeetingAsync();
                 _meetingContext.ResetMeetingContext();
                 _logger.LogInformation("Call ended (State={State}); transcription chunk timer stopped for this meeting.", stateStr);
             }
@@ -286,21 +286,27 @@ public sealed class CallHandler
                     })
                     .ToList();
 
-                if (humanParticipants.Count > 0 || Interlocked.Exchange(ref leaveTriggered, 1) != 0)
+                if (humanParticipants.Count > 0)
                 {
                     return;
                 }
 
-                _logger.LogInformation("No human participants left. Bot is leaving the call.");
+                if (Interlocked.Exchange(ref leaveTriggered, 1) != 0)
+                {
+                    return;
+                }
+
+                _logger.LogInformation("No human participants left. Sending final MIM payload (flag 2) and leaving the call.");
                 _ = Task.Run(async () =>
                 {
                     try
                     {
+                        await _transcriptionChunkManager.FlushNoParticipantsAsync().ConfigureAwait(false);
                         await call.DeleteAsync().ConfigureAwait(false);
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Error hanging up empty call.");
+                        _logger.LogError(ex, "Error sending final payload or hanging up empty call.");
                     }
                 });
             }

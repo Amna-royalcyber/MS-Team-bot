@@ -34,4 +34,10 @@ public interface IChunkManager
         string displayName,
         TimeSpan lookback,
         CancellationToken cancellationToken = default);
+
+    /// <summary>Final outbound payload when no human participants remain (flag 2).</summary>
+    Task FlushNoParticipantsAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>Flush any pending window and stop chunking for this meeting.</summary>
+    Task EndMeetingAsync(CancellationToken cancellationToken = default);
 }
