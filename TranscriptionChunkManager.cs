@@ -57,6 +57,8 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
     private bool _hasAnchor;
     private TimeWindowChunk? _currentWindow;
     private readonly HashSet<string> _dedupeKeys = new(StringComparer.Ordinal);
+    private readonly object _debounceLock = new();
+    private CancellationTokenSource? _debounceCts;
 
     public TranscriptionChunkManager(
         BotSettings settings,
@@ -218,6 +220,61 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
                 await FlushWindowAsync(window, flag: null, cancellationToken);
             }
         }
+
+        ScheduleDebouncedMimPost();
+    }
+
+    private void ScheduleDebouncedMimPost()
+    {
+        if (string.IsNullOrWhiteSpace(_settings.TranscriptAlbEndpoint))
+        {
+            return;
+        }
+
+        var delaySeconds = Math.Clamp(_settings.TranscriptPostDebounceSeconds, 1, 30);
+        CancellationTokenSource cts;
+        lock (_debounceLock)
+        {
+            _debounceCts?.Cancel();
+            _debounceCts?.Dispose();
+            cts = new CancellationTokenSource();
+            _debounceCts = cts;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cts.Token).ConfigureAwait(false);
+                await FlushDebouncedCurrentWindowAsync(cts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // superseded by a newer final transcript
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Debounced MIM post failed.");
+            }
+        });
+    }
+
+    private async Task FlushDebouncedCurrentWindowAsync(CancellationToken cancellationToken)
+    {
+        TimeWindowChunk? window;
+        lock (_lock)
+        {
+            if (!_hasAnchor || _currentWindow is null || _currentWindow.Fragments.Count == 0)
+            {
+                return;
+            }
+
+            window = _currentWindow;
+            _currentWindow = CreateNewWindow(DateTime.UtcNow);
+            _dedupeKeys.Clear();
+        }
+
+        await FlushWindowAsync(window, flag: null, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<int> ReconcileRecentIdentityAsync(

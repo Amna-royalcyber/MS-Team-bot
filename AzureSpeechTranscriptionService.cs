@@ -26,6 +26,7 @@ public sealed class AzureSpeechTranscriptionService : IAsyncDisposable
     private readonly IChunkManager _chunkManager;
     private readonly ILogger<AzureSpeechTranscriptionService> _logger;
     private readonly ConcurrentDictionary<uint, StreamSession> _sessions = new();
+    private readonly ConcurrentDictionary<uint, DateTime> _lastPartialBroadcastUtc = new();
     private readonly Timer _keepAliveTimer;
     private volatile bool _disposed;
     private int _loggedMissingAzureConfig;
@@ -189,10 +190,10 @@ public sealed class AzureSpeechTranscriptionService : IAsyncDisposable
         {
             var speechConfig = SpeechConfig.FromSubscription(_settings.AzureSpeechKey!, _settings.AzureSpeechRegion!);
             speechConfig.SpeechRecognitionLanguage = "en-US";
-            // Long meeting gaps: avoid service ending the session after ~minutes of no speech on the push stream.
+            // Fast phrase finals on UI (~500 ms pause); long EndSilence keeps push stream alive during extended quiet.
+            speechConfig.SetProperty(PropertyId.Speech_SegmentationSilenceTimeoutMs, "500");
+            speechConfig.SetProperty(PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, "500");
             speechConfig.SetProperty(PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "3600000");
-            speechConfig.SetProperty(PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, "3600000");
-            speechConfig.SetProperty(PropertyId.Speech_SegmentationSilenceTimeoutMs, "1000");
 
             var push = AudioInputStream.CreatePushStream(Pcm16kMono);
             var audioConfig = AudioConfig.FromStreamInput(push);
@@ -200,11 +201,26 @@ public sealed class AzureSpeechTranscriptionService : IAsyncDisposable
 
             recognizer.Recognizing += (_, e) =>
             {
+                if (!_settings.TranscriptBroadcastPartials)
+                {
+                    return;
+                }
+
                 var text = e.Result.Text;
                 if (string.IsNullOrWhiteSpace(text))
                 {
                     return;
                 }
+
+                var minMs = Math.Max(50, _settings.TranscribePartialMinIntervalMilliseconds);
+                var now = DateTime.UtcNow;
+                if (_lastPartialBroadcastUtc.TryGetValue(ssrc, out var last) &&
+                    (now - last).TotalMilliseconds < minMs)
+                {
+                    return;
+                }
+
+                _lastPartialBroadcastUtc[ssrc] = now;
 
                 TranscriptionParticipant currentIdentity;
                 lock (session.Gate)
@@ -219,7 +235,7 @@ public sealed class AzureSpeechTranscriptionService : IAsyncDisposable
                     ssrc,
                     text,
                     confidence: null,
-                    utteranceUtc: DateTime.UtcNow,
+                    utteranceUtc: now,
                     isFinal: false);
             };
 

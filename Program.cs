@@ -71,9 +71,13 @@ public static class Program
             TranscriptTimelineMergeMilliseconds = ReadInt(builder.Configuration, "BOT_TRANSCRIPT_TIMELINE_MS", "Bot:TranscriptTimelineMergeMilliseconds", 20),
             TranscriptAlbEndpoint = ReadOptional(builder.Configuration, "BOT_TRANSCRIPT_ALB_ENDPOINT", "Bot:TranscriptAlbEndpoint"),
             TranscriptPostIntervalSeconds = Math.Clamp(
-                ReadInt(builder.Configuration, "BOT_TRANSCRIPT_POST_INTERVAL_SEC", "Bot:TranscriptPostIntervalSeconds", 30),
-                10,
+                ReadInt(builder.Configuration, "BOT_TRANSCRIPT_POST_INTERVAL_SEC", "Bot:TranscriptPostIntervalSeconds", 10),
+                5,
                 300),
+            TranscriptPostDebounceSeconds = Math.Clamp(
+                ReadInt(builder.Configuration, "BOT_TRANSCRIPT_POST_DEBOUNCE_SEC", "Bot:TranscriptPostDebounceSeconds", 2),
+                1,
+                30),
             DynamoMeetingRecordsTableName = ReadOptional(builder.Configuration, "BOT_DYNAMO_TABLE_NAME", "Bot:DynamoMeetingRecordsTableName"),
             DynamoRegion = ReadOptional(builder.Configuration, "BOT_DYNAMO_REGION", "Bot:DynamoRegion"),
             DynamoPollIntervalSeconds = Math.Clamp(

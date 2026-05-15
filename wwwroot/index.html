@@ -77,6 +77,7 @@
       .build();
 
     let lastRosterByAad = {};
+    const liveLineByStream = {};
 
     function pick(obj, camel, pascal) {
       if (obj == null) return undefined;
@@ -137,15 +138,11 @@
       if (message == null) return;
       const kindRaw = pick(message, "kind", "Kind");
       const kind = kindRaw != null ? String(kindRaw) : "";
-      if (kind.toLowerCase() !== "final") {
-        return;
-      }
+      const isFinal = kind.toLowerCase() === "final";
       const text = pick(message, "text", "Text");
       if (text == null || String(text).trim() === "") {
         return;
       }
-      const line = document.createElement("div");
-      line.className = "line final";
       let label = "";
       const dn = pick(message, "displayName", "DisplayName");
       const sl = pick(message, "speakerLabel", "SpeakerLabel");
@@ -159,6 +156,14 @@
         label = lastRosterByAad[aad];
       }
       const sid = pick(message, "ssrc", "Ssrc") ?? pick(message, "sourceId", "SourceId");
+      const streamKey = sid != null && String(sid) !== "" ? String(sid) : (aad || "unknown");
+      let line = liveLineByStream[streamKey];
+      if (!line) {
+        line = document.createElement("div");
+        transcriptsEl.prepend(line);
+        liveLineByStream[streamKey] = line;
+      }
+      line.className = isFinal ? "line final" : "line partial";
       if (sid != null && sid !== "") {
         line.title = "Stream id (SSRC/sourceId): " + String(sid);
       }
@@ -169,7 +174,9 @@
         ? ` <span class="aad-id" title="Microsoft Entra object ID">${escapeHtml(String(aad))}</span>`
         : "";
       line.innerHTML = `${who}<span class="text">${escapeHtml(String(text))}</span>${oid}`;
-      transcriptsEl.prepend(line);
+      if (isFinal) {
+        delete liveLineByStream[streamKey];
+      }
     });
 
     function escapeHtml(s) {
