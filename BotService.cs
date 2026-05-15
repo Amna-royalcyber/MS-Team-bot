@@ -64,8 +64,11 @@ public sealed class BotSettings
     /// <summary>Optional merge window when multiplexing multiple participants into one timeline (milliseconds).</summary>
     public int TranscriptTimelineMergeMilliseconds { get; init; } = 20;
 
-    /// <summary>MIM API Gateway endpoint for 1-minute transcript JSON payloads.</summary>
+    /// <summary>MIM API Gateway endpoint for periodic transcript JSON payloads.</summary>
     public string? TranscriptAlbEndpoint { get; init; }
+
+    /// <summary>How often (seconds) to POST accumulated transcript to the MIM API (default 30).</summary>
+    public int TranscriptPostIntervalSeconds { get; init; } = 30;
 
     /// <summary>Wait up to this many ms for Entra mapping before sending buffered PCM to Transcribe (5000–10000).</summary>
     public int IdentityAudioBufferMilliseconds { get; init; } = 7000;

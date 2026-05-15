@@ -35,11 +35,12 @@ public sealed class TimeWindowChunk
 }
 
 /// <summary>
-/// Strict wall-clock 1-minute windows from call anchor. Posts JSON to the MIM API Gateway endpoint.
+/// Wall-clock windows from call anchor (see <see cref="BotSettings.TranscriptPostIntervalSeconds"/>). Posts JSON to the MIM API Gateway endpoint.
 /// </summary>
 public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
 {
-    private static readonly TimeSpan ChunkDuration = TimeSpan.FromMinutes(1);
+    private TimeSpan ChunkDuration =>
+        TimeSpan.FromSeconds(Math.Clamp(_settings.TranscriptPostIntervalSeconds, 10, 300));
 
     private const int MimFlagHasTranscript = 0;
     private const int MimFlagSilence = 1;
@@ -95,7 +96,10 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
             _hasAnchor = true;
             _currentWindow = CreateNewWindow(_meetingStartTimeUtc);
             _dedupeKeys.Clear();
-            _logger.LogInformation("Transcription chunk anchor set to {AnchorUtc} (UTC).", _meetingStartTimeUtc);
+            _logger.LogInformation(
+                "Transcription chunk anchor set to {AnchorUtc} (UTC). MIM post interval={IntervalSeconds}s.",
+                _meetingStartTimeUtc,
+                ChunkDuration.TotalSeconds);
         }
     }
 
@@ -142,7 +146,7 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
         await FlushWindowAsync(window, MimFlagNoParticipants, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>Record a final transcript line into the correct 1-minute chunk (may flush prior empty chunks).</summary>
+    /// <summary>Record a final transcript line into the current window (may flush prior windows when interval elapses).</summary>
     public async Task RecordFinalAsync(
         DateTime utteranceUtc,
         string participantId,
@@ -277,7 +281,8 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
     /// <summary>Timer-driven: close chunks when wall clock passes chunk end (handles silence with empty payloads).</summary>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        var tickSeconds = Math.Max(1, Math.Min(5, _settings.TranscriptPostIntervalSeconds / 6));
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(tickSeconds));
         while (!stoppingToken.IsCancellationRequested && await timer.WaitForNextTickAsync(stoppingToken))
         {
             if (string.IsNullOrWhiteSpace(_settings.TranscriptAlbEndpoint))
@@ -316,7 +321,7 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
         }
     }
 
-    private static TimeWindowChunk CreateNewWindow(DateTime startUtc)
+    private TimeWindowChunk CreateNewWindow(DateTime startUtc)
     {
         return new TimeWindowChunk
         {
