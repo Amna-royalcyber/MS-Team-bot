@@ -67,11 +67,11 @@ public sealed class BotSettings
     /// <summary>MIM API Gateway endpoint for periodic transcript JSON payloads.</summary>
     public string? TranscriptAlbEndpoint { get; init; }
 
-    /// <summary>Max seconds between MIM posts for silence-only windows (speech triggers debounced post sooner).</summary>
-    public int TranscriptPostIntervalSeconds { get; init; } = 10;
+    /// <summary>Minutes after call established before the first MIM payload (flag 0).</summary>
+    public int TranscriptFirstPostMinutes { get; init; } = 1;
 
-    /// <summary>Seconds after the last final transcript before posting the current MIM window (default 2).</summary>
-    public int TranscriptPostDebounceSeconds { get; init; } = 2;
+    /// <summary>Minutes between subsequent MIM payloads (flag 1).</summary>
+    public int TranscriptSubsequentPostMinutes { get; init; } = 3;
 
     /// <summary>Wait up to this many ms for Entra mapping before sending buffered PCM to Transcribe (5000–10000).</summary>
     public int IdentityAudioBufferMilliseconds { get; init; } = 7000;

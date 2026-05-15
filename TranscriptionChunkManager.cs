@@ -27,23 +27,13 @@ public sealed class TranscriptionChunk
     public required List<TranscriptItem> Items { get; init; }
 }
 
-public sealed class TimeWindowChunk
-{
-    public required DateTime StartTime { get; init; }
-    public required DateTime EndTime { get; init; }
-    public required List<TranscriptItem> Fragments { get; init; }
-}
-
 /// <summary>
-/// Wall-clock windows from call anchor (see <see cref="BotSettings.TranscriptPostIntervalSeconds"/>). Posts JSON to the MIM API Gateway endpoint.
+/// MIM schedule: first POST at 1 min (flag 0), then every 3 min (flag 1, always), flag 2 when no participants.
 /// </summary>
 public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
 {
-    private TimeSpan ChunkDuration =>
-        TimeSpan.FromSeconds(Math.Clamp(_settings.TranscriptPostIntervalSeconds, 10, 300));
-
-    private const int MimFlagHasTranscript = 0;
-    private const int MimFlagSilence = 1;
+    private const int MimFlagFirstWindow = 0;
+    private const int MimFlagSubsequentWindow = 1;
     private const int MimFlagNoParticipants = 2;
 
     private readonly BotSettings _settings;
@@ -54,11 +44,11 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
     private readonly object _lock = new();
     private int _anchorOnce;
     private DateTime _meetingStartTimeUtc;
+    private DateTime _windowStartUtc;
     private bool _hasAnchor;
-    private TimeWindowChunk? _currentWindow;
+    private int _completedPosts;
+    private readonly List<TranscriptItem> _accumulator = new();
     private readonly HashSet<string> _dedupeKeys = new(StringComparer.Ordinal);
-    private readonly object _debounceLock = new();
-    private CancellationTokenSource? _debounceCts;
 
     public TranscriptionChunkManager(
         BotSettings settings,
@@ -72,19 +62,18 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
         _logger = logger;
     }
 
-    /// <summary>Reset chunk state when starting a new join attempt (before call id exists).</summary>
     public void ResetForNewJoin()
     {
         Interlocked.Exchange(ref _anchorOnce, 0);
         lock (_lock)
         {
             _hasAnchor = false;
-            _currentWindow = null;
+            _accumulator.Clear();
             _dedupeKeys.Clear();
+            _completedPosts = 0;
         }
     }
 
-    /// <summary>Set wall-clock anchor once when the call is established (starts [0–3), [3–6), … windows).</summary>
     public void BeginMeeting(DateTime anchorUtc)
     {
         if (Interlocked.Exchange(ref _anchorOnce, 1) != 0)
@@ -95,13 +84,16 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
         lock (_lock)
         {
             _meetingStartTimeUtc = anchorUtc.Kind == DateTimeKind.Utc ? anchorUtc : anchorUtc.ToUniversalTime();
+            _windowStartUtc = _meetingStartTimeUtc;
             _hasAnchor = true;
-            _currentWindow = CreateNewWindow(_meetingStartTimeUtc);
+            _completedPosts = 0;
+            _accumulator.Clear();
             _dedupeKeys.Clear();
             _logger.LogInformation(
-                "Transcription chunk anchor set to {AnchorUtc} (UTC). MIM post interval={IntervalSeconds}s.",
-                _meetingStartTimeUtc,
-                ChunkDuration.TotalSeconds);
+                "MIM schedule started. First post at +{FirstMin} min (flag 0), then every {SubsequentMin} min (flag 1). Anchor={AnchorUtc} (UTC).",
+                FirstPostMinutes(),
+                SubsequentPostMinutes(),
+                _meetingStartTimeUtc);
         }
     }
 
@@ -109,19 +101,22 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
 
     public async Task EndMeetingAsync(CancellationToken cancellationToken = default)
     {
-        TimeWindowChunk? remaining;
+        List<TranscriptItem>? remaining;
+        int completedPosts;
         lock (_lock)
         {
-            remaining = _currentWindow;
-            _currentWindow = null;
-            _hasAnchor = false;
+            remaining = _accumulator.Count > 0 ? _accumulator.ToList() : null;
+            completedPosts = _completedPosts;
+            _accumulator.Clear();
             _dedupeKeys.Clear();
+            _hasAnchor = false;
             Interlocked.Exchange(ref _anchorOnce, 0);
         }
 
-        if (remaining is not null)
+        if (remaining is not null && remaining.Count > 0)
         {
-            await FlushWindowAsync(remaining, flag: null, cancellationToken).ConfigureAwait(false);
+            var flag = completedPosts == 0 ? MimFlagFirstWindow : MimFlagSubsequentWindow;
+            await PostPayloadAsync(remaining, _windowStartUtc, DateTime.UtcNow, flag, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -132,24 +127,27 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
             return;
         }
 
-        TimeWindowChunk? window;
+        List<TranscriptItem> snapshot;
+        var windowStart = _windowStartUtc;
         lock (_lock)
         {
-            if (!_hasAnchor || _currentWindow is null)
+            if (!_hasAnchor)
             {
                 return;
             }
 
-            window = _currentWindow;
-            _currentWindow = CreateNewWindow(_currentWindow.EndTime);
+            snapshot = _accumulator.ToList();
+            _accumulator.Clear();
             _dedupeKeys.Clear();
+            _hasAnchor = false;
+            Interlocked.Exchange(ref _anchorOnce, 0);
         }
 
-        await FlushWindowAsync(window, MimFlagNoParticipants, cancellationToken).ConfigureAwait(false);
+        await PostPayloadAsync(snapshot, windowStart, DateTime.UtcNow, MimFlagNoParticipants, cancellationToken)
+            .ConfigureAwait(false);
     }
 
-    /// <summary>Record a final transcript line into the current window (may flush prior windows when interval elapses).</summary>
-    public async Task RecordFinalAsync(
+    public Task RecordFinalAsync(
         DateTime utteranceUtc,
         string participantId,
         string speakerName,
@@ -158,30 +156,17 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
         uint? sourceStreamId = null,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(_settings.TranscriptAlbEndpoint))
+        if (string.IsNullOrWhiteSpace(_settings.TranscriptAlbEndpoint) || string.IsNullOrWhiteSpace(text))
         {
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return;
+            return Task.CompletedTask;
         }
 
         var utc = utteranceUtc.Kind == DateTimeKind.Utc ? utteranceUtc : utteranceUtc.ToUniversalTime();
-        _logger.LogDebug(
-            "CHUNK[RECORD] Final transcript received: participantId={ParticipantId}, speaker={Speaker}, sourceId={SourceId}, chars={Chars}.",
-            participantId,
-            speakerName,
-            sourceStreamId,
-            text.Length);
-
-        List<TimeWindowChunk>? windowsToFlush = null;
         lock (_lock)
         {
-            if (!_hasAnchor || _currentWindow is null)
+            if (!_hasAnchor)
             {
-                return;
+                return Task.CompletedTask;
             }
 
             if (utc < _meetingStartTimeUtc)
@@ -189,21 +174,12 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
                 utc = _meetingStartTimeUtc;
             }
 
-            while (utc >= _currentWindow.EndTime)
-            {
-                windowsToFlush ??= new List<TimeWindowChunk>();
-                windowsToFlush.Add(_currentWindow);
-                _currentWindow = CreateNewWindow(_currentWindow.EndTime);
-                _dedupeKeys.Clear();
-            }
-
             if (!_dedupeKeys.Add(dedupeKey))
             {
-                _logger.LogDebug("CHUNK[RECORD] Duplicate transcript dropped by dedupe key.");
-                return;
+                return Task.CompletedTask;
             }
 
-            _currentWindow.Fragments.Add(new TranscriptItem
+            _accumulator.Add(new TranscriptItem
             {
                 Timestamp = utc,
                 EntraObjectId = participantId.Trim(),
@@ -213,68 +189,7 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
             });
         }
 
-        if (windowsToFlush is not null)
-        {
-            foreach (var window in windowsToFlush)
-            {
-                await FlushWindowAsync(window, flag: null, cancellationToken);
-            }
-        }
-
-        ScheduleDebouncedMimPost();
-    }
-
-    private void ScheduleDebouncedMimPost()
-    {
-        if (string.IsNullOrWhiteSpace(_settings.TranscriptAlbEndpoint))
-        {
-            return;
-        }
-
-        var delaySeconds = Math.Clamp(_settings.TranscriptPostDebounceSeconds, 1, 30);
-        CancellationTokenSource cts;
-        lock (_debounceLock)
-        {
-            _debounceCts?.Cancel();
-            _debounceCts?.Dispose();
-            cts = new CancellationTokenSource();
-            _debounceCts = cts;
-        }
-
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cts.Token).ConfigureAwait(false);
-                await FlushDebouncedCurrentWindowAsync(cts.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                // superseded by a newer final transcript
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Debounced MIM post failed.");
-            }
-        });
-    }
-
-    private async Task FlushDebouncedCurrentWindowAsync(CancellationToken cancellationToken)
-    {
-        TimeWindowChunk? window;
-        lock (_lock)
-        {
-            if (!_hasAnchor || _currentWindow is null || _currentWindow.Fragments.Count == 0)
-            {
-                return;
-            }
-
-            window = _currentWindow;
-            _currentWindow = CreateNewWindow(DateTime.UtcNow);
-            _dedupeKeys.Clear();
-        }
-
-        await FlushWindowAsync(window, flag: null, cancellationToken).ConfigureAwait(false);
+        return Task.CompletedTask;
     }
 
     public Task<int> ReconcileRecentIdentityAsync(
@@ -288,30 +203,20 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
         var updated = 0;
         lock (_lock)
         {
-            if (_currentWindow is null)
-            {
-                return Task.FromResult(0);
-            }
-
-            foreach (var item in _currentWindow.Fragments)
+            foreach (var item in _accumulator)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (item.SourceStreamId != sourceId)
+                if (item.SourceStreamId != sourceId || item.Timestamp < sinceUtc)
                 {
                     continue;
                 }
 
-                if (item.Timestamp < sinceUtc)
-                {
-                    continue;
-                }
-
-                // Late-binding patch: replace temporary speaker placeholders once identity resolves.
                 var pendingPrefix = $"msi-pending-{sourceId}";
                 var isPendingId = item.EntraObjectId.StartsWith(pendingPrefix, StringComparison.OrdinalIgnoreCase);
                 var isPendingName = item.ParticipantName.StartsWith("Unknown", StringComparison.OrdinalIgnoreCase) ||
                                     item.ParticipantName.StartsWith("msi-pending-", StringComparison.OrdinalIgnoreCase);
-                if (!isPendingId && !isPendingName && !string.Equals(item.EntraObjectId, participantId, StringComparison.OrdinalIgnoreCase))
+                if (!isPendingId && !isPendingName &&
+                    !string.Equals(item.EntraObjectId, participantId, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
@@ -325,21 +230,18 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
         if (updated > 0)
         {
             _logger.LogInformation(
-                "CHUNK[RECONCILE] Updated {Count} recent transcript fragments for sourceId={SourceId} -> {DisplayName} ({ParticipantId}).",
+                "CHUNK[RECONCILE] Updated {Count} transcript lines for sourceId={SourceId} -> {DisplayName}.",
                 updated,
                 sourceId,
-                displayName,
-                participantId);
+                displayName);
         }
 
         return Task.FromResult(updated);
     }
 
-    /// <summary>Timer-driven: close chunks when wall clock passes chunk end (handles silence with empty payloads).</summary>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var tickSeconds = Math.Max(1, Math.Min(5, _settings.TranscriptPostIntervalSeconds / 6));
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(tickSeconds));
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
         while (!stoppingToken.IsCancellationRequested && await timer.WaitForNextTickAsync(stoppingToken))
         {
             if (string.IsNullOrWhiteSpace(_settings.TranscriptAlbEndpoint))
@@ -347,48 +249,54 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
                 continue;
             }
 
-            while (true)
+            List<TranscriptItem>? toPost = null;
+            DateTime windowStart;
+            DateTime windowEnd;
+            int flag;
+            lock (_lock)
             {
-                TimeWindowChunk? windowToFlush = null;
-                lock (_lock)
+                if (!_hasAnchor)
                 {
-                    if (!_hasAnchor || _currentWindow is null)
-                    {
-                        break;
-                    }
-
-                    var now = DateTime.UtcNow;
-                    if (now < _currentWindow.EndTime)
-                    {
-                        break;
-                    }
-
-                    windowToFlush = _currentWindow;
-                    _currentWindow = CreateNewWindow(_currentWindow.EndTime);
-                    _dedupeKeys.Clear();
+                    continue;
                 }
 
-                if (windowToFlush is null)
+                var now = DateTime.UtcNow;
+                var nextPostUtc = _meetingStartTimeUtc.AddMinutes(
+                    FirstPostMinutes() + (_completedPosts * SubsequentPostMinutes()));
+                if (now < nextPostUtc)
                 {
-                    break;
+                    continue;
                 }
 
-                await FlushWindowAsync(windowToFlush, flag: null, stoppingToken);
+                windowStart = _windowStartUtc;
+                windowEnd = now;
+                flag = _completedPosts == 0 ? MimFlagFirstWindow : MimFlagSubsequentWindow;
+                toPost = _accumulator.ToList();
+                _accumulator.Clear();
+                _dedupeKeys.Clear();
+                _completedPosts++;
+                _windowStartUtc = now;
+            }
+
+            if (toPost is not null)
+            {
+                await PostPayloadAsync(toPost, windowStart, windowEnd, flag, stoppingToken).ConfigureAwait(false);
             }
         }
     }
 
-    private TimeWindowChunk CreateNewWindow(DateTime startUtc)
-    {
-        return new TimeWindowChunk
-        {
-            StartTime = startUtc,
-            EndTime = startUtc.Add(ChunkDuration),
-            Fragments = new List<TranscriptItem>()
-        };
-    }
+    private int FirstPostMinutes() =>
+        Math.Clamp(_settings.TranscriptFirstPostMinutes, 1, 60);
 
-    private async Task FlushWindowAsync(TimeWindowChunk window, int? flag, CancellationToken cancellationToken)
+    private int SubsequentPostMinutes() =>
+        Math.Clamp(_settings.TranscriptSubsequentPostMinutes, 1, 60);
+
+    private async Task PostPayloadAsync(
+        IReadOnlyList<TranscriptItem> items,
+        DateTime windowStart,
+        DateTime windowEnd,
+        int flag,
+        CancellationToken cancellationToken)
     {
         var endpoint = _settings.TranscriptAlbEndpoint;
         if (string.IsNullOrWhiteSpace(endpoint))
@@ -396,15 +304,8 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
             return;
         }
 
-        var ordered = window.Fragments.OrderBy(i => i.Timestamp).ToList();
-        _logger.LogDebug(
-            "CHUNK[FLUSH] Preparing window flush Start={Start}, End={End}, RawLines={RawLines}.",
-            window.StartTime,
-            window.EndTime,
-            ordered.Count);
-
         var transcript = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var fragment in ordered)
+        foreach (var fragment in items.OrderBy(i => i.Timestamp))
         {
             if (string.IsNullOrWhiteSpace(fragment.Text))
             {
@@ -423,7 +324,6 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
             }
         }
 
-        var resolvedFlag = flag ?? ResolveMimFlag(transcript.Count);
         var snowTicket = _meetingContext.CurrentSnowTicketId;
         if (string.IsNullOrWhiteSpace(snowTicket))
         {
@@ -434,7 +334,7 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
         {
             MeetingId = NormalizeMeetingIdForOutbound(_meetingContext.CurrentMeetingId),
             Transcript = transcript,
-            Flag = resolvedFlag,
+            Flag = flag,
             BridgeLeadId = _meetingContext.CurrentBridgeLeadId,
             SnowTicketId = snowTicket
         };
@@ -456,38 +356,30 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning(
-                    "MIM chunk post failed. Status={Status}, MeetingId={MeetingId}, Flag={Flag}, SnowTicketId={SnowTicketId}, Start={Start}, End={End}, Speakers={Count}.",
+                    "MIM post failed. Status={Status}, MeetingId={MeetingId}, Flag={Flag}, Speakers={Count}, Window={Start}–{End}.",
                     (int)response.StatusCode,
                     payload.MeetingId,
                     payload.Flag,
-                    payload.SnowTicketId ?? "(none)",
-                    window.StartTime,
-                    window.EndTime,
-                    transcript.Count);
+                    transcript.Count,
+                    windowStart,
+                    windowEnd);
                 return;
             }
 
             _logger.LogInformation(
-                "Posted transcript chunk to MIM API. MeetingId={MeetingId}, Flag={Flag}, SnowTicketId={SnowTicketId}, Start={Start}, End={End}, Speakers={Count}.",
+                "MIM post OK. MeetingId={MeetingId}, Flag={Flag}, SnowTicketId={SnowTicketId}, Speakers={Count}, Window={Start}–{End}.",
                 payload.MeetingId,
                 payload.Flag,
                 payload.SnowTicketId ?? "(none)",
-                window.StartTime,
-                window.EndTime,
-                transcript.Count);
+                transcript.Count,
+                windowStart,
+                windowEnd);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "MIM chunk post error for window {Start}–{End}.", window.StartTime, window.EndTime);
-        }
-        finally
-        {
-            window.Fragments.Clear();
+            _logger.LogError(ex, "MIM post error for window {Start}–{End}, flag={Flag}.", windowStart, windowEnd, flag);
         }
     }
-
-    private static int ResolveMimFlag(int transcriptSpeakerCount) =>
-        transcriptSpeakerCount == 0 ? MimFlagSilence : MimFlagHasTranscript;
 
     private static string NormalizeMeetingIdForOutbound(string? meetingId)
     {
@@ -527,12 +419,11 @@ public sealed class TranscriptionChunkManager : BackgroundService, IChunkManager
                 }
                 catch
                 {
-                    // keep searching for any guid-looking token below
+                    // fall through
                 }
             }
         }
 
-        // Last fallback: extract the first GUID-looking token from the value.
         foreach (var token in value.Split([':', '_', '@', '/', '\\', '?', '&', '='], StringSplitOptions.RemoveEmptyEntries))
         {
             if (Guid.TryParse(token, out var extracted))
