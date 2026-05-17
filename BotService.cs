@@ -168,6 +168,7 @@ public sealed class BotService
                 throw new InvalidOperationException("Communications client is not initialized.");
             }
 
+            _meetingContext.PrepareForNewMeetingJoin();
             var parsed = MeetingJoinParser.ParseJoinUrl(request.MeetingJoinUrl);
             var transcriptMeetingId = !string.IsNullOrWhiteSpace(request.MeetingId)
                 ? request.MeetingId!.Trim()

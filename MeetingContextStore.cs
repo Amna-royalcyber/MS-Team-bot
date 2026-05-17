@@ -8,6 +8,54 @@ public sealed class MeetingContextStore
     private string _meetingTitle = string.Empty;
     private string _snowTicketId = string.Empty;
     private DateTime? _callEstablishedUtc;
+    /// <summary>When the meeting became empty (0 humans): enables Dynamo poll 2+ min after this even if the call ended and context was reset.</summary>
+    private DateTime? _dynamoPostEmptyAnchorUtc;
+    private string _dynamoPostEmptyMeetingId = string.Empty;
+    private string _dynamoPostEmptyBridgeLeadId = string.Empty;
+
+    public void BeginDynamoPostEmptyPollRetention(string? meetingId, string? bridgeLeadId)
+    {
+        if (string.IsNullOrWhiteSpace(meetingId) ||
+            string.Equals(meetingId.Trim(), "unknown", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        lock (_lock)
+        {
+            _dynamoPostEmptyMeetingId = meetingId.Trim();
+            _dynamoPostEmptyBridgeLeadId = string.IsNullOrWhiteSpace(bridgeLeadId) ? string.Empty : bridgeLeadId.Trim();
+            _dynamoPostEmptyAnchorUtc = DateTime.UtcNow;
+        }
+    }
+
+    /// <summary>Clears post-empty Dynamo retention (e.g. new join).</summary>
+    public void ClearDynamoPostEmptyPollRetention()
+    {
+        lock (_lock)
+        {
+            _dynamoPostEmptyAnchorUtc = null;
+            _dynamoPostEmptyMeetingId = string.Empty;
+            _dynamoPostEmptyBridgeLeadId = string.Empty;
+        }
+    }
+
+    public bool TryGetDynamoPostEmptyPoll(out string meetingId, out DateTime anchorUtc)
+    {
+        lock (_lock)
+        {
+            if (_dynamoPostEmptyAnchorUtc is null || string.IsNullOrWhiteSpace(_dynamoPostEmptyMeetingId))
+            {
+                meetingId = string.Empty;
+                anchorUtc = default;
+                return false;
+            }
+
+            meetingId = _dynamoPostEmptyMeetingId;
+            anchorUtc = _dynamoPostEmptyAnchorUtc.Value;
+            return true;
+        }
+    }
 
     public string CurrentMeetingId
     {
@@ -118,6 +166,7 @@ public sealed class MeetingContextStore
         }
     }
 
+    /// <summary>Clears live meeting fields when the Graph call ends. Post-empty Dynamo retention is kept until the next join.</summary>
     public void ResetMeetingContext()
     {
         lock (_lock)
@@ -127,6 +176,25 @@ public sealed class MeetingContextStore
             _meetingTitle = string.Empty;
             _snowTicketId = string.Empty;
             _callEstablishedUtc = null;
+        }
+    }
+
+    /// <summary>
+    /// Full wipe before a new join: live meeting state <em>and</em> post-empty Dynamo polling retention,
+    /// so the next meeting does not inherit titles, ids, or stale Dynamo anchors.
+    /// </summary>
+    public void PrepareForNewMeetingJoin()
+    {
+        lock (_lock)
+        {
+            _meetingId = "unknown";
+            _bridgeLeadId = string.Empty;
+            _meetingTitle = string.Empty;
+            _snowTicketId = string.Empty;
+            _callEstablishedUtc = null;
+            _dynamoPostEmptyAnchorUtc = null;
+            _dynamoPostEmptyMeetingId = string.Empty;
+            _dynamoPostEmptyBridgeLeadId = string.Empty;
         }
     }
 }

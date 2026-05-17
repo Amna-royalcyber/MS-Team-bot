@@ -97,23 +97,47 @@ public sealed class BridgeLeadDynamoDmService : BackgroundService
 
     private async Task PollAndNotifyAsync(CancellationToken cancellationToken)
     {
+        // Active call: poll 2+ min after established, using live meeting id.
         var establishedUtc = _meetingContext.CallEstablishedUtc;
-        if (establishedUtc is null)
-        {
-            return;
-        }
+        var liveMeetingId = _meetingContext.CurrentMeetingId?.Trim();
+        var hasLiveMeeting =
+            !string.IsNullOrWhiteSpace(liveMeetingId) &&
+            !string.Equals(liveMeetingId, "unknown", StringComparison.OrdinalIgnoreCase);
 
-        if (DateTime.UtcNow - establishedUtc.Value < DynamoPollDelayAfterCallEstablished)
+        string meetingIdKey;
+
+        if (establishedUtc is not null && hasLiveMeeting)
+        {
+            if (DateTime.UtcNow - establishedUtc.Value < DynamoPollDelayAfterCallEstablished)
+            {
+                return;
+            }
+
+            meetingIdKey = liveMeetingId!;
+        }
+        else if (_meetingContext.TryGetDynamoPostEmptyPoll(out var emptyMeetingId, out var emptyAnchor))
+        {
+            // Call ended with 0 participants: keep polling Dynamo by meeting_id after the same 2 min delay from empty time.
+            if (DateTime.UtcNow - emptyAnchor < DynamoPollDelayAfterCallEstablished)
+            {
+                return;
+            }
+
+            meetingIdKey = emptyMeetingId;
+            _logger.LogDebug(
+                "Dynamo poll using post–empty-meeting retention. meeting_id={MeetingId}, emptyAnchorUtc={AnchorUtc}.",
+                meetingIdKey,
+                emptyAnchor);
+        }
+        else
         {
             return;
         }
 
         var tableName = _settings.DynamoMeetingRecordsTableName!.Trim();
-        var meetingIdKey = _meetingContext.CurrentMeetingId?.Trim();
-        if (string.IsNullOrWhiteSpace(meetingIdKey) ||
-            string.Equals(meetingIdKey, "unknown", StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(meetingIdKey))
         {
-            _logger.LogInformation("Skipping Dynamo poll: meeting context id is not set yet.");
+            _logger.LogInformation("Skipping Dynamo poll: meeting id is empty.");
             return;
         }
 

@@ -301,6 +301,9 @@ public sealed class CallHandler
                 {
                     try
                     {
+                        var meetingForDynamo = _meetingContext.CurrentMeetingId?.Trim();
+                        var bridgeForDynamo = _meetingContext.CurrentBridgeLeadId?.Trim();
+                        _meetingContext.BeginDynamoPostEmptyPollRetention(meetingForDynamo, bridgeForDynamo);
                         await _transcriptionChunkManager.FlushNoParticipantsAsync().ConfigureAwait(false);
                         await call.DeleteAsync().ConfigureAwait(false);
                     }
